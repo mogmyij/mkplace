@@ -157,3 +157,47 @@ def test_jev_cost_is_accumulated(env):
 
     pipeline.run_search(FakeCrawler(ITEMS), due, classify)
     assert client.get("/api/status").json()["jev_cost_usd"] == pytest.approx(0.001 * len(ITEMS))
+
+
+class PhotoCrawler(FakeCrawler):
+    def fetch_image(self, url):
+        if url.endswith("/broken.jpg"):
+            raise RuntimeError("HTTP 403")
+        return b"jpeg", "image/jpeg"
+
+
+def test_photo_check_lowers_score_of_genuine_listings_only(env):
+    client, pipeline, db = env
+    items = [{**ITEMS[0], "image_url": "https://img/1.jpg"},
+             {**ITEMS[1], "id": "5", "title": "PS5 slim", "image_url": "https://img/broken.jpg"},
+             {**ITEMS[3], "image_url": "https://img/4.jpg"}]  # wanted post: never photo-checked
+    client.post("/api/searches", json={"query": "PS5 under $350", "location": "sydney"})
+    with db.session() as conn:
+        [due] = pipeline.due_searches(conn)
+
+    checked = []
+
+    def check_image(listing, image, mime):
+        checked.append(listing["id"])
+        return {"image_stock": 0.95, "image_damaged": 0.0, "image_no_item": 0.0, "cost": 0.0005}
+
+    summary = pipeline.run_search(PhotoCrawler(items), due, pipeline.get_classifier(), check_image)
+    assert summary.endswith("1 photos checked")
+    assert checked == ["1"]
+
+    with db.session() as conn:
+        row = conn.execute("SELECT text_score, ai_score, ai_reason FROM listing_searches WHERE listing_id='1'").fetchone()
+        assert row["ai_score"] == pytest.approx(row["text_score"] * 0.4, abs=0.1)
+        assert row["ai_reason"].endswith("· Stock photo")
+        # Broken download is marked done so it isn't retried; the wanted post was skipped entirely.
+        done = dict(conn.execute("SELECT id, image_checked_at IS NOT NULL FROM listings").fetchall())
+        assert done == {"1": 1, "5": 1, "4": 0}
+
+    ids = lambda q: {i["id"] for i in client.get("/api/listings?view=all" + q).json()["items"]}
+    assert "1" in ids("") and "1" not in ids("&hide_photo_issues=true")
+
+    # Second run: nothing left to check. Turning the setting off skips the step.
+    assert pipeline.run_search(PhotoCrawler(items), due, pipeline.get_classifier(), check_image).endswith("0 photos checked")
+    client.put("/api/settings", json={"image_check": False})
+    assert "photos" not in pipeline.run_search(PhotoCrawler(items), due, pipeline.get_classifier(), check_image)
+    assert client.get("/api/status").json()["jev_cost_usd"] == pytest.approx(0.0005)

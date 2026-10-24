@@ -34,8 +34,8 @@ def test_jev_client_request_and_scoring():
     assert set(seen["body"]["questions"]) == {"kind", "relevance", "deal", "worth"}
     assert json.loads(seen["body"]["state"])["buyer_budget"] == "max 350"
     assert out["ai_source"] == "jev-1.13.0"
-    assert out["ai_reason"] == "Exact match · great deal"
-    assert out["ai_score"] > 80
+    assert out["text_reason"] == "Exact match · great deal"
+    assert out["text_score"] > 80
     assert (out["kind"], out["junk_prob"]) == ("genuine", 0.05)
 
 
@@ -47,8 +47,8 @@ def test_relevant_ad_cannot_rank():
 
     client = JevClient(api_key="k", url="https://x", http=httpx.Client(transport=httpx.MockTransport(handler)))
     out = client.classify(SEARCH, LISTING)
-    assert out["ai_reason"] == "Business ad"
-    assert out["ai_score"] < 15
+    assert out["text_reason"] == "Business ad"
+    assert out["text_score"] < 15
     assert out["junk_prob"] == 0.9
 
 
@@ -65,14 +65,14 @@ def test_jev_client_retries_on_429():
     client = JevClient(api_key="k", url="https://x", http=httpx.Client(transport=httpx.MockTransport(handler)))
     out = client.classify(SEARCH, LISTING)
     assert len(calls) == 2
-    assert out["ai_reason"] == "Likely scam"
-    assert out["ai_score"] == 0
+    assert out["text_reason"] == "Likely scam"
+    assert out["text_score"] == 0
 
 
 def test_heuristic_penalises_over_budget():
     good = heuristic_classify(SEARCH, LISTING)
     pricey = heuristic_classify(SEARCH, {**LISTING, "price": 500})
-    assert good["ai_score"] > pricey["ai_score"]
+    assert good["text_score"] > pricey["text_score"]
     assert pricey["deal"] == "overpriced"
 
 
@@ -143,3 +143,35 @@ def test_config_prefers_openrouter(monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
         importlib.reload(config)
+
+
+def test_check_image_sends_photo_and_narrow_questions():
+    from app.jev import IMAGE_QUESTIONS
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"answers": {
+            "stock": {"noul": 0.95}, "damaged": {"noul": 0.1}, "no_item": {"noul": 0.2}}, "usage": {"cost": 0.0002}})
+
+    client = JevClient(api_key="k", url="https://openrouter.ai/api/v1/systemone",
+                       http=httpx.Client(transport=httpx.MockTransport(handler)))
+    out = client.check_image(LISTING, b"\xff\xd8jpeg", "image/jpeg")
+    text, image = seen["body"]["state"]
+    assert "Sony PS5 disc edition" in text
+    assert image["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert set(seen["body"]["questions"]) == set(IMAGE_QUESTIONS) == {"stock", "damaged", "no_item"}
+    assert out == {"image_stock": 0.95, "image_damaged": 0.1, "image_no_item": 0.2, "cost": 0.0002}
+
+
+@pytest.mark.parametrize("probs,factor,flags", [
+    ({}, 1.0, []),                                               # not checked yet
+    ({"image_stock": 0.55, "image_damaged": 0.59}, 1.0, []),     # unsure: no effect
+    ({"image_stock": 0.75}, 0.7, ["Stock photo"]),               # partial penalty
+    ({"image_damaged": 0.95, "image_no_item": 0.7}, 0.4, ["Looks damaged", "No real photo"]),  # worst flag wins
+])
+def test_image_factor_only_penalises_when_confident(probs, factor, flags):
+    from app.jev import image_factor
+    got_factor, got_flags = image_factor(probs)
+    assert got_factor == pytest.approx(factor)
+    assert got_flags == flags

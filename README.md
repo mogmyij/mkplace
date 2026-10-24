@@ -120,8 +120,14 @@ don't hit Facebook on an exact rhythm.
   scams. Tick the junk types to see what was filtered out.
 - Unseen/starred/hidden, sort by Jev score, newest, or price.
 - Price range, minimum Jev score, date found, and price rating.
+- Hide photo problems: listings whose photo Jev flagged as stock, damaged, or not a real photo.
 
 ## How Jev scores a listing
+
+Each listing gets up to two separate Jev judgments: a **text check** that decides the score, and
+an optional **photo check** that can only lower it.
+
+### 1. Text check
 
 Jev gets the buyer's request, budget, and the listing (title, price, location, description) and
 answers four typed questions:
@@ -133,13 +139,48 @@ answers four typed questions:
 | Price vs. typical used price | Choice: great / fair / overpriced / unclear | 20% |
 | Is it genuine, in budget, and worth messaging about? | Noul (probability) | 45% |
 
-A dealer ad that is a perfect keyword match therefore still scores near zero.
-
-All four questions go in **one request per new listing**, and only new listings are scored.
-OpenRouter charges for input tokens only (outputs are free), and each listing is roughly a
-thousand tokens. The running total from OpenRouter's `usage.cost` is shown in the status pill. The descriptions
+A dealer ad that is a perfect keyword match therefore still scores near zero. The descriptions
 of each post type are in `KIND_OPTIONS` in `app/jev.py`; edit them to teach Jev about patterns you
 see in your area. Editing a search's wording or budget re-scores its listings.
+
+### 2. Photo check (OpenRouter only)
+
+The listing's main photo is downloaded through the crawler's logged-in browser and sent to Jev,
+along with only the listing title, as a separate request. It deliberately asks three narrow,
+generic yes/no questions that don't depend on your request:
+
+| Flag | Question |
+|---|---|
+| Stock photo | Is this a stock, catalogue, manufacturer or watermarked image rather than the seller's own photo? |
+| Looks damaged | Is the item visibly broken, heavily damaged, or in very poor condition? |
+| No real photo | Is it text, a screenshot, a flyer, a logo, a placeholder, or a collage of many products? |
+
+It is built to be hard to get wrong:
+- **It only ever lowers a score.** A good photo doesn't add points, so a mistake can't promote a
+  bad listing.
+- **It only acts when Jev is confident.** Below 60% probability a flag is ignored. From 60% to 90%
+  the penalty scales up, to at most ×0.4 of the text score. If several flags fire, only the worst
+  one counts.
+- **It only runs where it matters:** genuine listings whose text score is at least the threshold
+  in ⚙ Settings (default 40), up to `IMAGE_CHECK_LIMIT` per run. Each photo is checked once,
+  because the answers don't depend on the search.
+- Photos that fail to download (expired links) are skipped without a penalty. If Jev errors, the
+  photo is retried on the next run.
+
+Flagged listings show the reason on the card (e.g. "Exact match · fair price · Stock photo"). You
+can turn the photo check off in ⚙ Settings. The thresholds are `IMAGE_THRESHOLD`, `IMAGE_FULL`
+and `IMAGE_MAX_PENALTY` in `app/jev.py`.
+
+OpenRouter says requests with images run in a slower, less accurate mode. That's why the photo
+check is a separate request with simple questions, rather than images being mixed into the text
+check.
+
+### Cost
+
+Only new listings are scored. The text check is one request of roughly a thousand tokens per
+listing. The photo check adds one image request for the listings that qualify. OpenRouter charges
+for input tokens only (outputs are free). The running total from OpenRouter's `usage.cost` is
+shown in the status pill.
 
 ## Configuration (`.env`)
 
@@ -154,6 +195,7 @@ see in your area. Editing a search's wording or budget re-scores its listings.
 | `APP_PASSWORD` | – | Basic-auth password for the UI (user `admin`) |
 | `DETAIL_FETCH_LIMIT` | 12 | New listings per run whose page is opened to read the description |
 | `SCROLL_ROUNDS` | 6 | How far down results the crawler scrolls (~20 listings per round) |
+| `IMAGE_CHECK_LIMIT` | 20 | Max photos sent to Jev per search run |
 | `WORKER_TICK_SECONDS` | 60 | Scheduler check frequency |
 | `RUN_WORKER` | 1 | Set to 0 to run the scheduler separately with `python -m app.worker` |
 

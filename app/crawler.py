@@ -162,6 +162,16 @@ class MarketplaceCrawler:
             self._pause()
         return list(found.values())
 
+    def fetch_image(self, url: str) -> tuple[bytes, str]:
+        """Download a listing photo through the logged-in browser context (FB image URLs are signed)."""
+        resp = self.context.request.get(url, timeout=30000)
+        if not resp.ok:
+            raise CrawlError(f"Image download failed: HTTP {resp.status}")
+        body = resp.body()
+        if len(body) > 4_000_000:
+            raise CrawlError("Image too large")
+        return body, resp.headers.get("content-type", "image/jpeg").split(";")[0]
+
     def description(self, url: str) -> str:
         try:
             self.page.goto(url, wait_until="domcontentloaded", timeout=45000)

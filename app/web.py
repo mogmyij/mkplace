@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from . import config, db, settings, worker
 from .crawler import CrawlError, load_cookies
+from .jev import IMAGE_THRESHOLD
 from .query_parser import parse_query
 
 STATIC = Path(__file__).parent / "static"
@@ -71,10 +72,13 @@ class ParseIn(BaseModel):
 
 
 class SettingsIn(BaseModel):
+    # Partial update: only fields present in the request are changed.
     paused: bool = False
     active_start_hour: int | None = Field(None, ge=0, le=23)
     active_end_hour: int | None = Field(None, ge=0, le=23)
     default_interval_minutes: int = Field(30, ge=5, le=10080)
+    image_check: bool = True
+    image_min_score: float = Field(40, ge=0, le=100)
 
 
 class ListingPatch(BaseModel):
@@ -179,6 +183,7 @@ def list_listings(
     deal: str | None = None,  # comma separated
     view: Literal["active", "new", "starred", "hidden", "all"] = "active",
     kind: str | None = None,  # comma separated; unclassified listings count as genuine
+    hide_photo_issues: bool = False,
     since_hours: int | None = None,
     sort: Literal["score", "newest", "price_asc", "price_desc"] = "score",
     limit: int = 60,
@@ -201,6 +206,10 @@ def list_listings(
         cutoff = datetime.now(timezone.utc).timestamp() - since_hours * 3600
         where.append("l.first_seen_at >= :cutoff")
         params["cutoff"] = datetime.fromtimestamp(cutoff, timezone.utc).isoformat(timespec="seconds")
+    if hide_photo_issues:
+        t = IMAGE_THRESHOLD
+        where.append(f"COALESCE(l.image_stock, 0) < {t} AND COALESCE(l.image_damaged, 0) < {t} "
+                     f"AND COALESCE(l.image_no_item, 0) < {t}")
     if view == "active":
         where.append("l.status != 'hidden'")
     elif view != "all":
@@ -254,7 +263,7 @@ def get_settings():
 @app.put("/api/settings")
 def put_settings(body: SettingsIn):
     with db.session() as conn:
-        return settings.save(conn, body.model_dump())
+        return settings.save(conn, body.model_dump(exclude_unset=True))
 
 
 @app.put("/api/cookies")
@@ -292,6 +301,7 @@ def status():
         "classifier": (f"Jev via {config.JEV_PROVIDER} ({config.JEV_MODEL})" if config.JEV_API_KEY
                        else "Heuristic (no OPENROUTER_API_KEY)"),
         "jev_cost_usd": jev_cost,
+        "photo_check_available": config.JEV_PROVIDER == "OpenRouter" and bool(config.JEV_API_KEY),
         "cookies_present": config.FB_COOKIES_FILE.exists(),
         "paused": current["paused"],
         "in_active_hours": settings.in_active_hours(current),

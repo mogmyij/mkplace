@@ -78,6 +78,7 @@
           <label class="check"><input type="checkbox" name="kind" value="bait_price"> Bait prices ($1, $123…)</label>
           <label class="check"><input type="checkbox" name="kind" value="scam"> Likely scams</label>
         </fieldset>
+        <label class="check"><input type="checkbox" id="hide_photo_issues"> Hide photo problems (stock, damaged, no real photo)</label>
         <button class="btn link" id="reset">Reset filters</button>
       </section>
     </aside>
@@ -164,6 +165,12 @@
       <p class="hint">Set both to "any time" to crawl around the clock. Overnight windows such as 22:00–06:00 work too. Times use the container's <code>TZ</code>.</p>
       <label class="field">Default interval for new searches (minutes)
         <input name="default_interval_minutes" type="number" min="5" max="10080">
+      </label>
+      <h3>Photo check</h3>
+      <label class="check"><input type="checkbox" name="image_check"> Also check listing photos with Jev</label>
+      <p class="hint" id="photo-hint">A second Jev check that only asks whether the main photo is a stock image, shows a damaged item, or isn't a real photo of an item. It can only lower a score, and only when Jev is confident. It runs on genuine listings whose text score is at least:</p>
+      <label class="field">Minimum text score to check the photo
+        <input name="image_min_score" type="number" min="0" max="100" step="5">
       </label>
       <h3>Facebook cookies</h3>
       <p class="hint" id="cookie-state"></p>

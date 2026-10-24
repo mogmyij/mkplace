@@ -18,6 +18,9 @@ def defaults() -> dict:
         "active_start_hour": start,
         "active_end_hour": end,
         "default_interval_minutes": config.DEFAULT_INTERVAL_MINUTES,
+        # Photo check: only for genuine listings whose text score already reaches this.
+        "image_check": True,
+        "image_min_score": 40,
     }
 
 

@@ -1,6 +1,6 @@
 const $ = (sel) => document.querySelector(sel);
 const PAGE = 60;
-const FILTER_IDS = ["q", "view", "sort", "min_price", "max_price", "min_score", "since_hours"];
+const FILTER_IDS = ["q", "view", "sort", "min_price", "max_price", "min_score", "since_hours", "hide_photo_issues"];
 const KIND_LABEL = { wanted: "Wanted post", business_ad: "Business ad", service: "Service/rental", bait_price: "Bait price", scam: "Likely scam" };
 const PRESETS = ["10", "15", "30", "60", "180", "720", "1440"];
 
@@ -190,7 +190,7 @@ $("#delete-search").onclick = async () => {
 // ---------- listings ----------
 function query(offset) {
   const p = new URLSearchParams({ view: $("#view").value, sort: $("#sort").value, min_score: $("#min_score").value,
-    limit: PAGE, offset });
+    hide_photo_issues: $("#hide_photo_issues").checked, limit: PAGE, offset });
   if (state.searchId) p.set("search_id", state.searchId);
   for (const id of ["q", "min_price", "max_price", "since_hours"]) if ($("#" + id).value) p.set(id, $("#" + id).value);
   const deals = checked("deal");
@@ -287,6 +287,7 @@ $("#reset").onclick = () => {
   $("#view").value = "active"; $("#sort").value = "score"; $("#min_score").value = 0; $("#min_score_val").textContent = "0";
   document.querySelectorAll('input[name="deal"]').forEach((cb) => (cb.checked = false));
   document.querySelectorAll('input[name="kind"]').forEach((cb) => (cb.checked = cb.value === "genuine"));
+  $("#hide_photo_issues").checked = false;
   refresh();
 };
 
@@ -309,6 +310,11 @@ $("#open-settings").onclick = async () => {
   f.active_start_hour.value = s.active_start_hour ?? "";
   f.active_end_hour.value = s.active_end_hour ?? "";
   f.default_interval_minutes.value = s.default_interval_minutes;
+  f.image_check.checked = s.image_check;
+  f.image_min_score.value = s.image_min_score;
+  const status = await api("/api/status");
+  f.image_check.disabled = f.image_min_score.disabled = !status.photo_check_available;
+  if (!status.photo_check_available) f.image_check.parentElement.title = "Needs OPENROUTER_API_KEY: Jev only accepts images through OpenRouter";
   f.cookies.value = "";
   settingsDialog.showModal();
 };
@@ -327,6 +333,8 @@ settingsForm.addEventListener("submit", async (e) => {
       active_start_hour: hour(f.active_start_hour.value),
       active_end_hour: hour(f.active_end_hour.value),
       default_interval_minutes: Number(f.default_interval_minutes.value) || 30,
+      image_check: f.image_check.checked,
+      image_min_score: Number(f.image_min_score.value) || 0,
     }) });
     settingsDialog.close();
     $("#banner").hidden = true;

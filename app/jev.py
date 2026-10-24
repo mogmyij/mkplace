@@ -6,6 +6,7 @@ listings from the noise Marketplace is full of: wanted posts, dealer/reseller ad
 and rentals, placeholder prices, and scams. Only genuine listings can score well; relevance
 and price then rank them.
 """
+import base64
 import json
 import logging
 import re
@@ -84,6 +85,47 @@ QUESTIONS = {
 }
 
 
+# The photo check is deliberately narrow: three generic yes/no questions that don't depend on
+# the buyer's request, so it's hard to get wrong. It can only pull a score down, and only when
+# Jev is confident (see image_factor).
+IMAGE_QUESTIONS = {
+    "stock": {
+        "type": "noul",
+        "instructions": (
+            "This is a stock, catalogue, manufacturer or watermarked product image, not a photo the seller "
+            "took of their own item."
+        ),
+    },
+    "damaged": {
+        "type": "noul",
+        "instructions": "The item in the photo is visibly broken, heavily damaged, or in very poor condition.",
+    },
+    "no_item": {
+        "type": "noul",
+        "instructions": (
+            "The photo does not show a physical item for sale: it is text, a screenshot, a flyer, a logo, "
+            "a placeholder, or a collage of many different products."
+        ),
+    },
+}
+IMAGE_LABEL = {"stock": "Stock photo", "damaged": "Looks damaged", "no_item": "No real photo"}
+# Below this probability a flag is ignored; at IMAGE_FULL it applies its full penalty.
+IMAGE_THRESHOLD, IMAGE_FULL, IMAGE_MAX_PENALTY = 0.6, 0.9, 0.6
+
+
+def image_factor(listing: dict) -> tuple[float, list[str]]:
+    """Multiplier (0.4-1.0) for a listing's text score from its photo check, plus labels of the flags hit."""
+    factor, flags = 1.0, []
+    for key, label in IMAGE_LABEL.items():
+        p = listing.get(f"image_{key}")
+        if p is None or p < IMAGE_THRESHOLD:
+            continue
+        strength = min(1.0, (p - IMAGE_THRESHOLD) / (IMAGE_FULL - IMAGE_THRESHOLD))
+        factor = min(factor, 1 - IMAGE_MAX_PENALTY * strength)
+        flags.append(label)
+    return factor, flags
+
+
 def build_state(search: dict, listing: dict) -> str:
     budget = []
     if search.get("min_price") is not None:
@@ -124,8 +166,8 @@ def result(kind: str, kind_probs: dict, relevance: float, deal: str, deal_probs:
            source: str, raw=None, cost: float = 0.0) -> dict:
     genuine = kind_probs.get("genuine", 1.0 if kind == "genuine" else 0.0)
     return {
-        "ai_score": combine(relevance, deal_probs, genuine, worth),
-        "ai_reason": describe(kind, relevance, deal),
+        "text_score": combine(relevance, deal_probs, genuine, worth),
+        "text_reason": describe(kind, relevance, deal),
         "ai_source": source,
         "kind": kind,
         "deal": deal,
@@ -143,7 +185,7 @@ class JevClient:
         self.model = model
         self.http = http or httpx.Client(timeout=30)
 
-    def ask(self, state: str, questions: dict) -> dict:
+    def ask(self, state: str | list, questions: dict) -> dict:
         body = {"state": state, "model": self.model, "questions": questions}
         headers = {"Authorization": f"Bearer {self.api_key}"}
         if "openrouter.ai" in self.url:
@@ -179,6 +221,21 @@ class JevClient:
             # OpenRouter reports the USD cost of each request; TypeSafe direct doesn't.
             cost=float((data.get("usage") or {}).get("cost") or 0),
         )
+
+
+    def check_image(self, listing: dict, image: bytes, mime: str = "image/jpeg") -> dict:
+        """Ask the narrow photo questions. Images are only accepted via OpenRouter."""
+        data_url = f"data:{mime};base64,{base64.b64encode(image).decode()}"
+        state = [
+            f"Photo from a Facebook Marketplace listing titled: {listing.get('title')!r}",
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+        data = self.ask(state, IMAGE_QUESTIONS)
+        a = data["answers"]
+        return {
+            **{f"image_{k}": float(a[k]["noul"]) for k in IMAGE_QUESTIONS},
+            "cost": float((data.get("usage") or {}).get("cost") or 0),
+        }
 
 
 # (kind, where to look, pattern). Wanted/service wording is only trusted in the title; descriptions
@@ -218,6 +275,13 @@ def heuristic_classify(search: dict, listing: dict) -> dict:
     worth = overlap * (0.3 if deal == "overpriced" else 1.0)
     genuine = 0.9 if kind == "genuine" else 0.15
     return result(kind, {"genuine": genuine}, 3 * overlap, deal, {deal: 1.0}, worth, "heuristic")
+
+
+def get_image_checker():
+    """Photo checks need Jev's image input, which only OpenRouter offers. None when unavailable."""
+    if config.JEV_PROVIDER != "OpenRouter" or not config.JEV_API_KEY:
+        return None
+    return JevClient().check_image
 
 
 def get_classifier():

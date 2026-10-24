@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS listings (
     url TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'new',
+    image_stock REAL,
+    image_damaged REAL,
+    image_no_item REAL,
+    image_checked_at TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
@@ -42,6 +46,8 @@ CREATE TABLE IF NOT EXISTS listing_searches (
     listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
     search_id INTEGER NOT NULL REFERENCES searches(id) ON DELETE CASCADE,
     first_seen_at TEXT NOT NULL,
+    text_score REAL,
+    text_reason TEXT,
     ai_score REAL,
     ai_reason TEXT,
     ai_source TEXT,
@@ -85,15 +91,31 @@ def session():
         conn.close()
 
 
+# Columns added after the first release: (table, column, type).
+MIGRATIONS = [
+    ("listing_searches", "kind", "TEXT"),
+    ("listing_searches", "junk_prob", "REAL"),
+    ("listing_searches", "text_score", "REAL"),
+    ("listing_searches", "text_reason", "TEXT"),
+    ("listings", "image_stock", "REAL"),
+    ("listings", "image_damaged", "REAL"),
+    ("listings", "image_no_item", "REAL"),
+    ("listings", "image_checked_at", "TEXT"),
+]
+
+
 def init():
     with session() as conn:
         conn.executescript(SCHEMA)
-        # Databases created before listing kinds existed: add the columns and re-score.
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(listing_searches)")}
-        if "junk_prob" not in cols:
-            conn.execute("ALTER TABLE listing_searches ADD COLUMN kind TEXT")
-            conn.execute("ALTER TABLE listing_searches ADD COLUMN junk_prob REAL")
+        added = set()
+        for table, column, kind in MIGRATIONS:
+            if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+                added.add(column)
+        if "junk_prob" in added:  # scored before listing kinds existed: re-score
             conn.execute("UPDATE listing_searches SET classified_at=NULL")
+        elif "text_score" in added:
+            conn.execute("UPDATE listing_searches SET text_score=ai_score, text_reason=ai_reason")
 
 
 def set_meta(conn, key: str, value) -> None:

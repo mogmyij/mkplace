@@ -1,0 +1,20 @@
+services:
+  web:
+    build: .
+    command: uvicorn app.web:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  # Crawls saved searches on their schedule, independent of whether anyone has the UI open.
+  worker:
+    build: .
+    command: python -m app.worker
+    env_file: .env
+    volumes:
+      - ./data:/data
+    shm_size: 1gb
+    restart: unless-stopped

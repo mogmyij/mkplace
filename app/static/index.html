@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mkplace</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn only-mobile" id="toggle-sidebar" aria-label="Filters">☰</button>
+    <a class="brand" href="/">mkplace</a>
+    <input id="q" type="search" placeholder="Search within results">
+    <span id="status-pill" class="pill">…</span>
+  </header>
+
+  <div class="layout">
+    <aside id="sidebar">
+      <section>
+        <div class="section-head">
+          <h2>Saved searches</h2>
+          <button class="btn primary small" id="new-search">+ New</button>
+        </div>
+        <ul id="searches" class="search-list"></ul>
+      </section>
+
+      <section>
+        <h2>Filters</h2>
+        <label class="field">Show
+          <select id="view">
+            <option value="active">All except hidden</option>
+            <option value="new">Unseen only</option>
+            <option value="starred">Starred</option>
+            <option value="hidden">Hidden</option>
+            <option value="all">Everything</option>
+          </select>
+        </label>
+        <label class="field">Sort by
+          <select id="sort">
+            <option value="score">Best match (Jev score)</option>
+            <option value="newest">Date listed: newest first</option>
+            <option value="price_asc">Price: lowest first</option>
+            <option value="price_desc">Price: highest first</option>
+          </select>
+        </label>
+        <div class="field">Price
+          <div class="row">
+            <input id="min_price" type="number" min="0" placeholder="Min">
+            <span>to</span>
+            <input id="max_price" type="number" min="0" placeholder="Max">
+          </div>
+        </div>
+        <label class="field">Minimum score: <b id="min_score_val">0</b>
+          <input id="min_score" type="range" min="0" max="90" step="5" value="0">
+        </label>
+        <label class="field">Date found
+          <select id="since_hours">
+            <option value="">Any time</option>
+            <option value="1">Last hour</option>
+            <option value="24">Last 24 hours</option>
+            <option value="168">Last 7 days</option>
+          </select>
+        </label>
+        <fieldset class="field">
+          <legend>Price rating</legend>
+          <label class="check"><input type="checkbox" name="deal" value="great_deal"> Great deal</label>
+          <label class="check"><input type="checkbox" name="deal" value="fair"> Fair price</label>
+          <label class="check"><input type="checkbox" name="deal" value="unclear"> Unclear</label>
+          <label class="check"><input type="checkbox" name="deal" value="overpriced"> Overpriced</label>
+        </fieldset>
+        <label class="check"><input type="checkbox" id="hide_scams" checked> Hide likely scams</label>
+        <button class="btn link" id="reset">Reset filters</button>
+      </section>
+    </aside>
+
+    <main>
+      <div class="results-head">
+        <h1 id="results-title">All listings</h1>
+        <span id="count" class="muted"></span>
+      </div>
+      <div id="banner" class="banner" hidden></div>
+      <div id="grid" class="grid"></div>
+      <div class="center"><button class="btn" id="more" hidden>Load more</button></div>
+    </main>
+  </div>
+
+  <dialog id="search-dialog">
+    <form id="search-form" method="dialog">
+      <h2 id="dialog-title">New search</h2>
+      <label class="field">What are you looking for?
+        <textarea name="query" rows="3" required placeholder="e.g. a PS5 disc edition under $350, ideally with 2 controllers, nothing modded"></textarea>
+      </label>
+      <p class="hint">Price limits are picked out of your text automatically. The whole request also goes to Jev, which uses it to judge each listing.</p>
+      <div class="row2">
+        <label class="field">Search keywords
+          <input name="keywords" placeholder="auto">
+        </label>
+        <label class="field">Name
+          <input name="name" placeholder="auto">
+        </label>
+      </div>
+      <div class="row2">
+        <label class="field">Min price<input name="min_price" type="number" min="0" placeholder="auto"></label>
+        <label class="field">Max price<input name="max_price" type="number" min="0" placeholder="auto"></label>
+      </div>
+      <div class="row2">
+        <label class="field">Location
+          <input name="location" required placeholder="sydney or a location ID">
+        </label>
+        <label class="field">Radius (km)
+          <input name="radius_km" type="number" min="1" max="500" value="40">
+        </label>
+      </div>
+      <div class="row2">
+        <label class="field">Check every
+          <select name="interval_minutes">
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30" selected>30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="180">3 hours</option>
+            <option value="720">12 hours</option>
+          </select>
+        </label>
+        <label class="check pad-top"><input type="checkbox" name="enabled" checked> Enabled</label>
+      </div>
+      <p class="hint">Location is the bit after <code>/marketplace/</code> in the FB URL once you've set a location there, e.g. <code>sydney</code> or <code>112345678901234</code>.</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger" id="delete-search" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="cancel">Cancel</button>
+        <button type="submit" class="btn primary">Save &amp; run</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -3,11 +3,14 @@
 Uses cookies exported from a logged-in browser. Results are parsed from the rendered listing
 cards (anchors to /marketplace/item/<id>/), which has proven steadier than FB's private GraphQL.
 """
+import io
 import json
 import logging
 import random
 import re
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+
+from PIL import Image
 
 from playwright.sync_api import sync_playwright
 
@@ -121,6 +124,47 @@ DETAIL_JS = """
 }
 """
 
+# fbcdn photo URLs that aren't part of this listing's gallery: other listings ("similar items"),
+# the seller's profile picture, and page chrome.
+_NOT_GALLERY = 'a[href*="/marketplace/item/"], a[href*="/profile"], a[href*="/marketplace/profile"], [role="banner"], [role="navigation"], [role="complementary"]'
+
+MAIN_PHOTO_JS = """
+() => {
+    // The photo currently open in the listing's viewer: the largest visible fbcdn image.
+    let best = null, bestArea = 40000;
+    for (const img of document.querySelectorAll('img')) {
+        const src = img.currentSrc || img.src || '';
+        if (!/fbcdn|scontent/.test(src) || img.closest('%s')) continue;
+        const r = img.getBoundingClientRect();
+        const area = r.width * r.height;
+        if (r.bottom > 0 && r.top < innerHeight && area > bestArea) { best = src; bestArea = area; }
+    }
+    return best;
+}
+""" % _NOT_GALLERY
+
+GALLERY_JS = """
+() => [...document.querySelectorAll('img')]
+    .filter(img => /fbcdn|scontent/.test(img.currentSrc || img.src || '') && !img.closest('%s'))
+    .filter(img => Math.max(img.naturalWidth, img.naturalHeight) >= 60)
+    .map(img => img.currentSrc || img.src)
+""" % _NOT_GALLERY
+
+
+def photo_key(url: str) -> str:
+    """FB serves the same photo at several sizes; the file name identifies the photo itself."""
+    return urlparse(url).path.rsplit("/", 1)[-1]
+
+
+def shrink(image: bytes, max_side: int = 1024) -> bytes:
+    """Re-encode as a JPEG no larger than max_side, to keep Jev requests small."""
+    with Image.open(io.BytesIO(image)) as img:
+        img = img.convert("RGB")
+        img.thumbnail((max_side, max_side))
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=80)
+        return out.getvalue()
+
 
 class MarketplaceCrawler:
     def __enter__(self):
@@ -163,20 +207,66 @@ class MarketplaceCrawler:
         return list(found.values())
 
     def fetch_image(self, url: str) -> tuple[bytes, str]:
-        """Download a listing photo through the logged-in browser context (FB image URLs are signed)."""
+        """Download a listing photo through the logged-in browser context and shrink it to a JPEG."""
         resp = self.context.request.get(url, timeout=30000)
         if not resp.ok:
             raise CrawlError(f"Image download failed: HTTP {resp.status}")
         body = resp.body()
-        if len(body) > 4_000_000:
+        if len(body) > 15_000_000:
             raise CrawlError("Image too large")
-        return body, resp.headers.get("content-type", "image/jpeg").split(";")[0]
+        return shrink(body, config.PHOTO_MAX_SIDE), "image/jpeg"
 
-    def description(self, url: str) -> str:
+    def details(self, url: str) -> dict:
+        """Open a listing and return its description and the URLs of all its photos."""
         try:
             self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
             self._pause(1.5, 3.5)
-            return self.page.evaluate(DETAIL_JS)
+            description = self.page.evaluate(DETAIL_JS)
         except Exception as e:
             log.warning("Detail fetch failed for %s: %s", url, e)
-            return ""
+            return {"description": "", "photos": []}
+        return {"description": description, "photos": self._gallery()}
+
+    def _gallery(self) -> list[str]:
+        # Step through the photo viewer so each photo is captured at full size...
+        photos: dict[str, str] = {}
+        start_url = self.page.url
+        try:
+            for _ in range(config.MAX_PHOTOS):
+                src = self.page.evaluate(MAIN_PHOTO_JS)
+                if not src or photo_key(src) in photos:
+                    break
+                photos[photo_key(src)] = src
+                nxt = self.page.locator('[aria-label*="next" i]:visible').first
+                if not nxt.count():
+                    break
+                nxt.click(timeout=3000)
+                self.page.wait_for_timeout(random.uniform(500, 900))
+                if self.page.url.split("?")[0] != start_url.split("?")[0]:
+                    # That "next" went to another listing; keep only what we had.
+                    log.warning("Photo viewer navigated away from %s", start_url)
+                    return list(photos.values())
+            # ...then any photos the viewer didn't reach: click their strip thumbnail to open them
+            # full size, or fall back to the thumbnail itself.
+            for src in self.page.evaluate(GALLERY_JS):
+                if len(photos) >= config.MAX_PHOTOS:
+                    break
+                key = photo_key(src)
+                if key in photos:
+                    continue
+                full = src
+                try:
+                    self.page.locator(f'img[src="{src}"]').first.click(timeout=2000)
+                    self.page.wait_for_timeout(random.uniform(400, 700))
+                    opened = self.page.evaluate(MAIN_PHOTO_JS)
+                    if opened and photo_key(opened) == key:
+                        full = opened
+                except Exception:
+                    pass
+                if self.page.url.split("?")[0] != start_url.split("?")[0]:
+                    log.warning("Photo strip navigated away from %s", start_url)
+                    break
+                photos[key] = full
+        except Exception as e:
+            log.warning("Photo gallery read failed: %s", e)
+        return list(photos.values())

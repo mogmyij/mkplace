@@ -85,45 +85,55 @@ QUESTIONS = {
 }
 
 
-# The photo check is deliberately narrow: three generic yes/no questions that don't depend on
-# the buyer's request, so it's hard to get wrong. It can only pull a score down, and only when
-# Jev is confident (see image_factor).
-IMAGE_QUESTIONS = {
-    "stock": {
+# Photo check: one request per listing and search with ALL of the listing's photos, the
+# buyer's request and the listing text, asking general "is this worth a look?" questions.
+# It can only pull a score down, and only when Jev leans clearly negative (see photo_factor).
+CONDITION_LEVELS = [
+    "Broken, badly damaged, or missing parts",
+    "Worn, with clearly visible flaws",
+    "Good used condition with normal wear",
+    "Like new or new",
+]
+CONDITION_LABEL = ["Broken", "Worn", "Good", "Like new"]
+PHOTO_QUESTIONS = {
+    "worth": {
         "type": "noul",
         "instructions": (
-            "This is a stock, catalogue, manufacturer or watermarked product image, not a photo the seller "
-            "took of their own item."
+            "Judging from the photos, this listing is worth the buyer's time to open and look at closely "
+            "for what they want."
         ),
     },
-    "damaged": {
-        "type": "noul",
-        "instructions": "The item in the photo is visibly broken, heavily damaged, or in very poor condition.",
-    },
-    "no_item": {
+    "genuine": {
         "type": "noul",
         "instructions": (
-            "The photo does not show a physical item for sale: it is text, a screenshot, a flyer, a logo, "
-            "a placeholder, or a collage of many different products."
+            "The photos are the seller's own pictures of the actual item for sale, not stock or catalogue "
+            "images, screenshots, adverts or graphics. Plain, dark or messy photos still count as genuine."
         ),
+    },
+    "condition": {
+        "type": "score",
+        "instructions": "Judging from all the photos, what condition is the item in?",
+        "criteria": CONDITION_LEVELS,
     },
 }
-IMAGE_LABEL = {"stock": "Stock photo", "damaged": "Looks damaged", "no_item": "No real photo"}
-# Below this probability a flag is ignored; at IMAGE_FULL it applies its full penalty.
-IMAGE_THRESHOLD, IMAGE_FULL, IMAGE_MAX_PENALTY = 0.6, 0.9, 0.6
+PHOTO_LABEL = {"worth": "Photos not convincing", "genuine": "Not the seller's own photos"}
+# A "no" only counts below 50%; at 0% the score is multiplied by 1 - PHOTO_MAX_PENALTY.
+PHOTO_PASS, PHOTO_MAX_PENALTY = 0.5, 0.6
 
 
-def image_factor(listing: dict) -> tuple[float, list[str]]:
-    """Multiplier (0.4-1.0) for a listing's text score from its photo check, plus labels of the flags hit."""
-    factor, flags = 1.0, []
-    for key, label in IMAGE_LABEL.items():
-        p = listing.get(f"image_{key}")
-        if p is None or p < IMAGE_THRESHOLD:
-            continue
-        strength = min(1.0, (p - IMAGE_THRESHOLD) / (IMAGE_FULL - IMAGE_THRESHOLD))
-        factor = min(factor, 1 - IMAGE_MAX_PENALTY * strength)
-        flags.append(label)
-    return factor, flags
+def photo_factor(row: dict) -> tuple[float, list[str]]:
+    """Multiplier (0.4-1.0) for a text score from its photo check, plus labels to show on the card."""
+    if row.get("photo_worth") is None:
+        return 1.0, []
+    factor, labels = 1.0, []
+    for key, label in PHOTO_LABEL.items():
+        p = row.get(f"photo_{key}")
+        if p is not None and p < PHOTO_PASS:
+            factor = min(factor, 1 - PHOTO_MAX_PENALTY * (PHOTO_PASS - p) / PHOTO_PASS)
+            labels.append(label)
+    if row.get("photo_condition") is not None:
+        labels.append(f"Condition: {CONDITION_LABEL[min(3, max(0, round(row['photo_condition'])))]}")
+    return factor, labels
 
 
 def build_state(search: dict, listing: dict) -> str:
@@ -223,17 +233,21 @@ class JevClient:
         )
 
 
-    def check_image(self, listing: dict, image: bytes, mime: str = "image/jpeg") -> dict:
-        """Ask the narrow photo questions. Images are only accepted via OpenRouter."""
-        data_url = f"data:{mime};base64,{base64.b64encode(image).decode()}"
-        state = [
-            f"Photo from a Facebook Marketplace listing titled: {listing.get('title')!r}",
-            {"type": "image_url", "image_url": {"url": data_url}},
+    def check_photos(self, search: dict, listing: dict, photos: list[tuple[bytes, str]]) -> dict:
+        """Ask the photo questions about every photo at once. Images are only accepted via OpenRouter."""
+        state: list = [
+            "Facebook Marketplace listing and its photos.\n" + build_state(search, listing),
         ]
-        data = self.ask(state, IMAGE_QUESTIONS)
+        for i, (image, mime) in enumerate(photos, 1):
+            state.append(f"Photo {i} of {len(photos)}:")
+            state.append({"type": "image_url",
+                          "image_url": {"url": f"data:{mime};base64,{base64.b64encode(image).decode()}"}})
+        data = self.ask(state, PHOTO_QUESTIONS)
         a = data["answers"]
         return {
-            **{f"image_{k}": float(a[k]["noul"]) for k in IMAGE_QUESTIONS},
+            "photo_worth": float(a["worth"]["noul"]),
+            "photo_genuine": float(a["genuine"]["noul"]),
+            "photo_condition": float(a["condition"]["score"]),
             "cost": float((data.get("usage") or {}).get("cost") or 0),
         }
 
@@ -277,11 +291,11 @@ def heuristic_classify(search: dict, listing: dict) -> dict:
     return result(kind, {"genuine": genuine}, 3 * overlap, deal, {deal: 1.0}, worth, "heuristic")
 
 
-def get_image_checker():
+def get_photo_checker():
     """Photo checks need Jev's image input, which only OpenRouter offers. None when unavailable."""
     if config.JEV_PROVIDER != "OpenRouter" or not config.JEV_API_KEY:
         return None
-    return JevClient().check_image
+    return JevClient().check_photos
 
 
 def get_classifier():

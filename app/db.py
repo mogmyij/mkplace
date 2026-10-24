@@ -34,10 +34,7 @@ CREATE TABLE IF NOT EXISTS listings (
     url TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'new',
-    image_stock REAL,
-    image_damaged REAL,
-    image_no_item REAL,
-    image_checked_at TEXT,
+    photos TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
@@ -54,6 +51,10 @@ CREATE TABLE IF NOT EXISTS listing_searches (
     kind TEXT,
     deal TEXT,
     junk_prob REAL,
+    photo_worth REAL,
+    photo_genuine REAL,
+    photo_condition REAL,
+    photo_checked_at TEXT,
     ai_raw TEXT,
     classified_at TEXT,
     PRIMARY KEY (listing_id, search_id)
@@ -97,10 +98,11 @@ MIGRATIONS = [
     ("listing_searches", "junk_prob", "REAL"),
     ("listing_searches", "text_score", "REAL"),
     ("listing_searches", "text_reason", "TEXT"),
-    ("listings", "image_stock", "REAL"),
-    ("listings", "image_damaged", "REAL"),
-    ("listings", "image_no_item", "REAL"),
-    ("listings", "image_checked_at", "TEXT"),
+    ("listings", "photos", "TEXT"),
+    ("listing_searches", "photo_worth", "REAL"),
+    ("listing_searches", "photo_genuine", "REAL"),
+    ("listing_searches", "photo_condition", "REAL"),
+    ("listing_searches", "photo_checked_at", "TEXT"),
 ]
 
 

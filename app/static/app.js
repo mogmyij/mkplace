@@ -1,6 +1,6 @@
 const $ = (sel) => document.querySelector(sel);
 const PAGE = 60;
-const FILTER_IDS = ["q", "view", "sort", "min_price", "max_price", "min_score", "since_hours", "hide_photo_issues"];
+const FILTER_IDS = ["q", "view", "sort", "min_price", "max_price", "min_score", "since_hours", "hide_photo_issues", "min_condition"];
 const KIND_LABEL = { wanted: "Wanted post", business_ad: "Business ad", service: "Service/rental", bait_price: "Bait price", scam: "Likely scam" };
 const PRESETS = ["10", "15", "30", "60", "180", "720", "1440"];
 
@@ -192,7 +192,7 @@ function query(offset) {
   const p = new URLSearchParams({ view: $("#view").value, sort: $("#sort").value, min_score: $("#min_score").value,
     hide_photo_issues: $("#hide_photo_issues").checked, limit: PAGE, offset });
   if (state.searchId) p.set("search_id", state.searchId);
-  for (const id of ["q", "min_price", "max_price", "since_hours"]) if ($("#" + id).value) p.set(id, $("#" + id).value);
+  for (const id of ["q", "min_price", "max_price", "since_hours", "min_condition"]) if ($("#" + id).value) p.set(id, $("#" + id).value);
   const deals = checked("deal");
   if (deals.length) p.set("deal", deals.join(","));
   // No type ticked means show everything rather than nothing.
@@ -210,6 +210,7 @@ function card(l) {
       ${score == null ? `<span class="score" title="Waiting for classification">…</span>` : `<span class="score ${cls}" title="${esc(l.ai_source)}">${score}</span>`}
       ${l.status === "new" ? `<span class="unseen">New</span>` : ""}
       ${KIND_LABEL[l.kind] ? `<span class="kind">${KIND_LABEL[l.kind]}</span>` : ""}
+      ${l.photo_count > 1 ? `<span class="photos" title="${l.photo_count} photos">📷 ${l.photo_count}</span>` : ""}
       <div class="card-actions">
         <button data-act="star" class="${l.status === "starred" ? "on" : ""}" title="Star">★</button>
         <button data-act="hide" title="${l.status === "hidden" ? "Unhide" : "Hide"}">${l.status === "hidden" ? "↺" : "✕"}</button>
@@ -283,7 +284,7 @@ $("#min_score").addEventListener("input", () => { $("#min_score_val").textConten
 $("#more").onclick = () => loadListings(true);
 $("#toggle-sidebar").onclick = () => $("#sidebar").classList.toggle("open");
 $("#reset").onclick = () => {
-  for (const id of ["q", "min_price", "max_price", "since_hours"]) $("#" + id).value = "";
+  for (const id of ["q", "min_price", "max_price", "since_hours", "min_condition"]) $("#" + id).value = "";
   $("#view").value = "active"; $("#sort").value = "score"; $("#min_score").value = 0; $("#min_score_val").textContent = "0";
   document.querySelectorAll('input[name="deal"]').forEach((cb) => (cb.checked = false));
   document.querySelectorAll('input[name="kind"]').forEach((cb) => (cb.checked = cb.value === "genuine"));
@@ -310,11 +311,11 @@ $("#open-settings").onclick = async () => {
   f.active_start_hour.value = s.active_start_hour ?? "";
   f.active_end_hour.value = s.active_end_hour ?? "";
   f.default_interval_minutes.value = s.default_interval_minutes;
-  f.image_check.checked = s.image_check;
-  f.image_min_score.value = s.image_min_score;
+  f.photo_check.checked = s.photo_check;
+  f.photo_min_score.value = s.photo_min_score;
   const status = await api("/api/status");
-  f.image_check.disabled = f.image_min_score.disabled = !status.photo_check_available;
-  if (!status.photo_check_available) f.image_check.parentElement.title = "Needs OPENROUTER_API_KEY: Jev only accepts images through OpenRouter";
+  f.photo_check.disabled = f.photo_min_score.disabled = !status.photo_check_available;
+  if (!status.photo_check_available) f.photo_check.parentElement.title = "Needs OPENROUTER_API_KEY: Jev only accepts images through OpenRouter";
   f.cookies.value = "";
   settingsDialog.showModal();
 };
@@ -333,8 +334,8 @@ settingsForm.addEventListener("submit", async (e) => {
       active_start_hour: hour(f.active_start_hour.value),
       active_end_hour: hour(f.active_end_hour.value),
       default_interval_minutes: Number(f.default_interval_minutes.value) || 30,
-      image_check: f.image_check.checked,
-      image_min_score: Number(f.image_min_score.value) || 0,
+      photo_check: f.photo_check.checked,
+      photo_min_score: Number(f.photo_min_score.value) || 0,
     }) });
     settingsDialog.close();
     $("#banner").hidden = true;

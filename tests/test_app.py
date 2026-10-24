@@ -18,14 +18,16 @@ def env(tmp_path, monkeypatch):
 class FakeCrawler:
     def __init__(self, items):
         self.items = items
-        self.details = []
+        self.opened = []
 
     def search(self, search):
         return self.items
 
-    def description(self, url):
-        self.details.append(url)
-        return "Barely used, comes with two controllers"
+    def details(self, url):
+        self.opened.append(url)
+        lid = url.rstrip("/").rsplit("/", 1)[-1]
+        return {"description": "Barely used, comes with two controllers",
+                "photos": [f"https://img/{lid}-a.jpg", f"https://img/{lid}-b.jpg"]}
 
 
 ITEMS = [
@@ -52,11 +54,11 @@ def test_end_to_end(env):
     crawler = FakeCrawler(ITEMS)
     summary = pipeline.run_search(crawler, due, pipeline.get_classifier())
     assert summary == "4 found, 4 new, 4 classified"
-    assert len(crawler.details) == 4
+    assert len(crawler.opened) == 4
 
     # Second run: nothing new, nothing re-classified, no detail pages re-opened.
     assert pipeline.run_search(crawler, due, pipeline.get_classifier()) == "4 found, 0 new, 0 classified"
-    assert len(crawler.details) == 4
+    assert len(crawler.opened) == 4
 
     genuine = client.get("/api/listings?kind=genuine").json()["items"]
     assert [i["id"] for i in genuine][0] == "1"  # best match first
@@ -160,44 +162,76 @@ def test_jev_cost_is_accumulated(env):
 
 
 class PhotoCrawler(FakeCrawler):
+    def __init__(self, items, broken=()):
+        super().__init__(items)
+        self.broken, self.fetched = set(broken), []
+
     def fetch_image(self, url):
-        if url.endswith("/broken.jpg"):
+        self.fetched.append(url)
+        if any(b in url for b in self.broken):
             raise RuntimeError("HTTP 403")
-        return b"jpeg", "image/jpeg"
+        return url.encode(), "image/jpeg"
 
 
-def test_photo_check_lowers_score_of_genuine_listings_only(env):
+def test_photo_check_sends_all_photos_and_lowers_scores(env, monkeypatch):
     client, pipeline, db = env
-    items = [{**ITEMS[0], "image_url": "https://img/1.jpg"},
-             {**ITEMS[1], "id": "5", "title": "PS5 slim", "image_url": "https://img/broken.jpg"},
+    from app import config
+    monkeypatch.setattr(config, "DETAIL_FETCH_LIMIT", 1)  # listing 5's page is only opened by the photo step
+    items = [{**ITEMS[0], "image_url": "https://img/1-thumb.jpg"},
+             {**ITEMS[1], "id": "5", "title": "PS5 slim", "image_url": "https://img/5-thumb.jpg",
+              "url": "https://www.facebook.com/marketplace/item/5/"},
+             {**ITEMS[1], "id": "6", "title": "PS5 pro", "image_url": "https://img/6-thumb.jpg",
+              "url": "https://www.facebook.com/marketplace/item/6/"},
              {**ITEMS[3], "image_url": "https://img/4.jpg"}]  # wanted post: never photo-checked
     client.post("/api/searches", json={"query": "PS5 under $350", "location": "sydney"})
     with db.session() as conn:
         [due] = pipeline.due_searches(conn)
 
-    checked = []
+    sent = {}
 
-    def check_image(listing, image, mime):
-        checked.append(listing["id"])
-        return {"image_stock": 0.95, "image_damaged": 0.0, "image_no_item": 0.0, "cost": 0.0005}
+    def check(search, listing, images):
+        sent[listing["id"]] = [img for img, _ in images]
+        ok = listing["id"] != "1"
+        return {"photo_worth": 0.9 if ok else 0.1, "photo_genuine": 0.95 if ok else 0.2,
+                "photo_condition": 2.2, "cost": 0.0005}
 
-    summary = pipeline.run_search(PhotoCrawler(items), due, pipeline.get_classifier(), check_image)
-    assert summary.endswith("1 photos checked")
-    assert checked == ["1"]
+    crawler = PhotoCrawler(items, broken=["6-"])
+    summary = pipeline.run_search(crawler, due, pipeline.get_classifier(), check)
+    assert summary.endswith("2 photo sets checked")
+    # Every gallery photo goes to Jev in one request, including for a listing whose page the photo
+    # step had to open itself. Listing 6's photos all failed to download: no request, no penalty.
+    assert sent == {"1": [b"https://img/1-a.jpg", b"https://img/1-b.jpg"],
+                    "5": [b"https://img/5-a.jpg", b"https://img/5-b.jpg"]}
 
     with db.session() as conn:
-        row = conn.execute("SELECT text_score, ai_score, ai_reason FROM listing_searches WHERE listing_id='1'").fetchone()
-        assert row["ai_score"] == pytest.approx(row["text_score"] * 0.4, abs=0.1)
-        assert row["ai_reason"].endswith("· Stock photo")
-        # Broken download is marked done so it isn't retried; the wanted post was skipped entirely.
-        done = dict(conn.execute("SELECT id, image_checked_at IS NOT NULL FROM listings").fetchall())
-        assert done == {"1": 1, "5": 1, "4": 0}
+        rows = {r["listing_id"]: dict(r) for r in conn.execute("SELECT * FROM listing_searches")}
+    bad, good = rows["1"], rows["5"]
+    assert bad["ai_score"] == pytest.approx(bad["text_score"] * (1 - 0.6 * 0.8), abs=0.1)  # worst of the two "no"s
+    assert bad["ai_reason"].endswith("· Photos not convincing · Not the seller's own photos · Condition: Good")
+    assert good["ai_score"] == good["text_score"]
+    assert good["ai_reason"].endswith("· Condition: Good")
+    assert rows["6"]["photo_checked_at"] and rows["6"]["ai_score"] == rows["6"]["text_score"]
+    assert rows["4"]["photo_checked_at"] is None
 
     ids = lambda q: {i["id"] for i in client.get("/api/listings?view=all" + q).json()["items"]}
     assert "1" in ids("") and "1" not in ids("&hide_photo_issues=true")
+    assert ids("&min_condition=2") == {"1", "5"} and ids("&min_condition=3") == set()
+    assert client.get("/api/listings?view=all").json()["items"][0]["photo_count"] == 2
 
     # Second run: nothing left to check. Turning the setting off skips the step.
-    assert pipeline.run_search(PhotoCrawler(items), due, pipeline.get_classifier(), check_image).endswith("0 photos checked")
-    client.put("/api/settings", json={"image_check": False})
-    assert "photos" not in pipeline.run_search(PhotoCrawler(items), due, pipeline.get_classifier(), check_image)
-    assert client.get("/api/status").json()["jev_cost_usd"] == pytest.approx(0.0005)
+    assert pipeline.run_search(crawler, due, pipeline.get_classifier(), check).endswith("0 photo sets checked")
+    client.put("/api/settings", json={"photo_check": False})
+    assert "photo" not in pipeline.run_search(crawler, due, pipeline.get_classifier(), check)
+    assert client.get("/api/status").json()["jev_cost_usd"] == pytest.approx(0.001)
+
+
+def test_editing_request_rechecks_photos(env):
+    client, pipeline, db = env
+    s = client.post("/api/searches", json={"query": "PS5 under $350", "location": "sydney"}).json()
+    with db.session() as conn:
+        [due] = pipeline.due_searches(conn)
+    check = lambda search, listing, images: {"photo_worth": 0.9, "photo_genuine": 0.9, "photo_condition": 3, "cost": 0}
+    pipeline.run_search(PhotoCrawler(ITEMS), due, pipeline.get_classifier(), check)
+    client.put(f"/api/searches/{s['id']}", json={"query": "PS5 for parts", "location": "sydney"})
+    with db.session() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM listing_searches WHERE photo_checked_at IS NOT NULL").fetchone()[0] == 0

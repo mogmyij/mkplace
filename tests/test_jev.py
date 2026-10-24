@@ -145,33 +145,37 @@ def test_config_prefers_openrouter(monkeypatch):
         importlib.reload(config)
 
 
-def test_check_image_sends_photo_and_narrow_questions():
-    from app.jev import IMAGE_QUESTIONS
+def test_check_photos_sends_every_photo_with_request_context():
+    from app.jev import PHOTO_QUESTIONS
     seen = {}
 
     def handler(request):
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"answers": {
-            "stock": {"noul": 0.95}, "damaged": {"noul": 0.1}, "no_item": {"noul": 0.2}}, "usage": {"cost": 0.0002}})
+            "worth": {"noul": 0.8}, "genuine": {"noul": 0.9}, "condition": {"score": 2.6}}, "usage": {"cost": 0.0002}})
 
     client = JevClient(api_key="k", url="https://openrouter.ai/api/v1/systemone",
                        http=httpx.Client(transport=httpx.MockTransport(handler)))
-    out = client.check_image(LISTING, b"\xff\xd8jpeg", "image/jpeg")
-    text, image = seen["body"]["state"]
-    assert "Sony PS5 disc edition" in text
-    assert image["image_url"]["url"].startswith("data:image/jpeg;base64,")
-    assert set(seen["body"]["questions"]) == set(IMAGE_QUESTIONS) == {"stock", "damaged", "no_item"}
-    assert out == {"image_stock": 0.95, "image_damaged": 0.1, "image_no_item": 0.2, "cost": 0.0002}
+    out = client.check_photos(SEARCH, LISTING, [(b"one", "image/jpeg"), (b"two", "image/jpeg"), (b"three", "image/jpeg")])
+    intro, *parts = seen["body"]["state"]
+    assert "PS5 under $350" in intro and "Sony PS5 disc edition" in intro  # buyer request + listing text
+    assert parts[0] == "Photo 1 of 3:" and parts[4] == "Photo 3 of 3:"
+    images = [p["image_url"]["url"] for p in parts if isinstance(p, dict)]
+    assert len(images) == 3 and all(u.startswith("data:image/jpeg;base64,") for u in images)
+    assert set(seen["body"]["questions"]) == set(PHOTO_QUESTIONS) == {"worth", "genuine", "condition"}
+    assert out == {"photo_worth": 0.8, "photo_genuine": 0.9, "photo_condition": 2.6, "cost": 0.0002}
 
 
-@pytest.mark.parametrize("probs,factor,flags", [
-    ({}, 1.0, []),                                               # not checked yet
-    ({"image_stock": 0.55, "image_damaged": 0.59}, 1.0, []),     # unsure: no effect
-    ({"image_stock": 0.75}, 0.7, ["Stock photo"]),               # partial penalty
-    ({"image_damaged": 0.95, "image_no_item": 0.7}, 0.4, ["Looks damaged", "No real photo"]),  # worst flag wins
+@pytest.mark.parametrize("row,factor,labels", [
+    ({}, 1.0, []),                                                                  # not checked yet
+    ({"photo_worth": 0.7, "photo_genuine": 0.5, "photo_condition": 2.4}, 1.0, ["Condition: Good"]),
+    ({"photo_worth": 0.25, "photo_genuine": 0.9, "photo_condition": 0.2}, 0.7,
+     ["Photos not convincing", "Condition: Broken"]),
+    ({"photo_worth": 0.4, "photo_genuine": 0.0, "photo_condition": 3}, 0.4,       # worst "no" wins
+     ["Photos not convincing", "Not the seller's own photos", "Condition: Like new"]),
 ])
-def test_image_factor_only_penalises_when_confident(probs, factor, flags):
-    from app.jev import image_factor
-    got_factor, got_flags = image_factor(probs)
+def test_photo_factor_only_penalises_clear_noes(row, factor, labels):
+    from app.jev import photo_factor
+    got_factor, got_labels = photo_factor(row)
     assert got_factor == pytest.approx(factor)
-    assert got_flags == flags
+    assert got_labels == labels

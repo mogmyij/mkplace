@@ -120,7 +120,8 @@ don't hit Facebook on an exact rhythm.
   scams. Tick the junk types to see what was filtered out.
 - Unseen/starred/hidden, sort by Jev score, newest, or price.
 - Price range, minimum Jev score, date found, and price rating.
-- Hide photo problems: listings whose photo Jev flagged as stock, damaged, or not a real photo.
+- Condition from photos (worn or better, good or better, like new), and hiding listings whose
+  photos failed the check.
 
 ## How Jev scores a listing
 
@@ -145,40 +146,39 @@ see in your area. Editing a search's wording or budget re-scores its listings.
 
 ### 2. Photo check (OpenRouter only)
 
-The listing's main photo is downloaded through the crawler's logged-in browser and sent to Jev,
-along with only the listing title, as a separate request. It deliberately asks three narrow,
-generic yes/no questions that don't depend on your request:
+For listings that pass the text check, the crawler opens the listing page and collects **every
+photo**. It steps through the photo viewer and clicks any thumbnails the viewer didn't reach, so
+each photo is captured at full size. The photos are shrunk to 1024 px and sent to Jev **all
+together in one request**, with your request and the listing text. Jev answers three general
+questions:
 
-| Flag | Question |
-|---|---|
-| Stock photo | Is this a stock, catalogue, manufacturer or watermarked image rather than the seller's own photo? |
-| Looks damaged | Is the item visibly broken, heavily damaged, or in very poor condition? |
-| No real photo | Is it text, a screenshot, a flyer, a logo, a placeholder, or a collage of many products? |
+| Question | Jev type | Effect |
+|---|---|---|
+| Judging from the photos, is this worth a closer look for what the buyer wants? | Noul | Lowers the score when Jev leans "no" |
+| Are these the seller's own photos of the actual item (not stock images, screenshots or ads)? Plain, dark or messy photos still count. | Noul | Lowers the score when Jev leans "no" |
+| What condition is the item in? Broken / Worn / Good / Like new | Score | Shown on the card and filterable; no direct penalty |
 
-It is built to be hard to get wrong:
-- **It only ever lowers a score.** A good photo doesn't add points, so a mistake can't promote a
-  bad listing.
-- **It only acts when Jev is confident.** Below 60% probability a flag is ignored. From 60% to 90%
-  the penalty scales up, to at most ×0.4 of the text score. If several flags fire, only the worst
-  one counts.
-- **It only runs where it matters:** genuine listings whose text score is at least the threshold
-  in ⚙ Settings (default 40), up to `IMAGE_CHECK_LIMIT` per run. Each photo is checked once,
-  because the answers don't depend on the search.
-- Photos that fail to download (expired links) are skipped without a penalty. If Jev errors, the
-  photo is retried on the next run.
+Rules that keep it from doing harm:
+- **It only ever lowers a score.** Nice photos don't add points, so a mistake can't promote a bad
+  listing.
+- **Only clear "no"s count.** At 50% or above nothing happens. Below that, the penalty grows to
+  at most ×0.4 of the text score at 0%, and only the worse of the two answers counts.
+- **Your request is included**, so "PS5 for parts" won't be marked down for showing a broken
+  console. Editing a search's wording or budget re-checks its photos.
+- **Only listings that matter are checked:** genuine listings whose text score is at least the
+  threshold in ⚙ Settings (default 40), up to `PHOTO_CHECK_LIMIT` per run, each once per search.
+- If no photo can be downloaded (expired links), the listing gets no penalty and isn't retried.
+  If Jev errors, the check is retried on the next run.
 
-Flagged listings show the reason on the card (e.g. "Exact match · fair price · Stock photo"). You
-can turn the photo check off in ⚙ Settings. The thresholds are `IMAGE_THRESHOLD`, `IMAGE_FULL`
-and `IMAGE_MAX_PENALTY` in `app/jev.py`.
-
-OpenRouter says requests with images run in a slower, less accurate mode. That's why the photo
-check is a separate request with simple questions, rather than images being mixed into the text
-check.
+Cards show the result in the reason line (e.g. "Exact match · fair price · Condition: Good") and
+a 📷 count of the photos found. The sidebar can filter by condition and hide listings whose photos
+failed. You can turn the photo check off in ⚙ Settings. The cut-off and penalty are `PHOTO_PASS`
+and `PHOTO_MAX_PENALTY` in `app/jev.py`.
 
 ### Cost
 
 Only new listings are scored. The text check is one request of roughly a thousand tokens per
-listing. The photo check adds one image request for the listings that qualify. OpenRouter charges
+listing. The photo check adds one request carrying all of a qualifying listing's photos. OpenRouter charges
 for input tokens only (outputs are free). The running total from OpenRouter's `usage.cost` is
 shown in the status pill.
 
@@ -195,7 +195,9 @@ shown in the status pill.
 | `APP_PASSWORD` | – | Basic-auth password for the UI (user `admin`) |
 | `DETAIL_FETCH_LIMIT` | 12 | New listings per run whose page is opened to read the description |
 | `SCROLL_ROUNDS` | 6 | How far down results the crawler scrolls (~20 listings per round) |
-| `IMAGE_CHECK_LIMIT` | 20 | Max photos sent to Jev per search run |
+| `PHOTO_CHECK_LIMIT` | 20 | Max listings photo-checked per search run |
+| `MAX_PHOTOS` | 10 | Max photos per listing sent to Jev |
+| `PHOTO_MAX_SIDE` | 1024 | Photos are shrunk to this many pixels on the longest side before sending |
 | `WORKER_TICK_SECONDS` | 60 | Scheduler check frequency |
 | `RUN_WORKER` | 1 | Set to 0 to run the scheduler separately with `python -m app.worker` |
 

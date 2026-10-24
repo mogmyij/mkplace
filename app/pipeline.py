@@ -1,9 +1,10 @@
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
 from . import config, db, settings
 from .crawler import CrawlError, MarketplaceCrawler
-from .jev import get_classifier, get_image_checker, image_factor
+from .jev import get_classifier, get_photo_checker, photo_factor
 
 log = logging.getLogger(__name__)
 
@@ -41,54 +42,71 @@ def classify_pending(conn, search: dict, classify) -> int:
                WHERE listing_id=:lid AND search_id=:sid""",
             {**result, "ts": db.now(), "lid": row["id"], "sid": search["id"]},
         )
-        apply_image(conn, row["id"])
+        apply_scores(conn, row["id"], search["id"])
         conn.commit()
     add_cost(conn, spent)
     return len(rows)
 
 
-def apply_image(conn, listing_id: str) -> None:
-    """Final score = text score x photo penalty (1.0 when the photo is fine or unchecked)."""
-    listing = conn.execute("SELECT * FROM listings WHERE id=?", (listing_id,)).fetchone()
-    factor, flags = image_factor(dict(listing))
-    for ls in conn.execute("SELECT search_id, text_score, text_reason FROM listing_searches "
-                           "WHERE listing_id=? AND text_score IS NOT NULL", (listing_id,)).fetchall():
-        conn.execute(
-            "UPDATE listing_searches SET ai_score=?, ai_reason=? WHERE listing_id=? AND search_id=?",
-            (round(ls["text_score"] * factor, 1), " · ".join([ls["text_reason"], *flags]), listing_id, ls["search_id"]),
-        )
+def apply_scores(conn, listing_id: str, search_id: int) -> None:
+    """Final score = text score x photo penalty (1.0 when the photos look fine or aren't checked yet)."""
+    row = conn.execute("SELECT * FROM listing_searches WHERE listing_id=? AND search_id=?",
+                       (listing_id, search_id)).fetchone()
+    if row is None or row["text_score"] is None:
+        return
+    factor, labels = photo_factor(dict(row))
+    conn.execute(
+        "UPDATE listing_searches SET ai_score=?, ai_reason=? WHERE listing_id=? AND search_id=?",
+        (round(row["text_score"] * factor, 1), " · ".join([row["text_reason"], *labels]), listing_id, search_id),
+    )
 
 
-def check_images(conn, crawler, search: dict, check_image, min_score: float) -> int:
-    """Run the photo check on this search's best genuine listings that haven't had one yet."""
+def save_details(conn, listing_id: str, details: dict) -> None:
+    conn.execute("UPDATE listings SET description=COALESCE(NULLIF(?, ''), description), photos=? WHERE id=?",
+                 (details["description"], json.dumps(details["photos"]), listing_id))
+
+
+def check_photos(conn, crawler, search: dict, check, min_score: float) -> int:
+    """Send all photos of this search's best unchecked genuine listings to Jev."""
     rows = conn.execute(
         """SELECT l.* FROM listings l JOIN listing_searches ls ON ls.listing_id = l.id
-           WHERE ls.search_id=? AND l.image_checked_at IS NULL AND l.image_url IS NOT NULL
+           WHERE ls.search_id=? AND ls.photo_checked_at IS NULL
              AND ls.text_score >= ? AND COALESCE(ls.kind, 'genuine') = 'genuine'
            ORDER BY ls.text_score DESC LIMIT ?""",
-        (search["id"], min_score, config.IMAGE_CHECK_LIMIT),
+        (search["id"], min_score, config.PHOTO_CHECK_LIMIT),
     ).fetchall()
     spent, checked = 0.0, 0
     for row in rows:
-        try:
-            image, mime = crawler.fetch_image(row["image_url"])
-        except Exception as e:
-            # Expired or missing photo: record it as checked (no penalty) so it isn't retried every run.
-            log.warning("Photo download failed for %s: %s", row["id"], e)
-            conn.execute("UPDATE listings SET image_checked_at=? WHERE id=?", (db.now(), row["id"]))
+        listing = dict(row)
+        if listing["photos"] is None:  # listing page not opened yet: get its description and gallery
+            details = crawler.details(listing["url"])
+            save_details(conn, listing["id"], details)
+            listing["photos"] = json.dumps(details["photos"])
+            listing["description"] = details["description"] or listing["description"]
+        urls = json.loads(listing["photos"]) or ([listing["image_url"]] if listing["image_url"] else [])
+        images = []
+        for url in urls[: config.MAX_PHOTOS]:
+            try:
+                images.append(crawler.fetch_image(url))
+            except Exception as e:
+                log.warning("Photo download failed for %s: %s", listing["id"], e)
+        if not images:
+            # No usable photos (expired links): mark done with no penalty so it isn't retried every run.
+            conn.execute("UPDATE listing_searches SET photo_checked_at=? WHERE listing_id=? AND search_id=?",
+                         (db.now(), listing["id"], search["id"]))
             continue
         try:
-            res = check_image(dict(row), image, mime)
+            res = check(search, listing, images)
         except Exception as e:  # Jev hiccup: leave unchecked and retry next run
-            log.warning("Jev photo check failed for %s: %s", row["id"], e)
+            log.warning("Jev photo check failed for %s: %s", listing["id"], e)
             continue
         spent += res.pop("cost", 0)
         conn.execute(
-            "UPDATE listings SET image_stock=:image_stock, image_damaged=:image_damaged, "
-            "image_no_item=:image_no_item, image_checked_at=:ts WHERE id=:id",
-            {**res, "ts": db.now(), "id": row["id"]},
+            """UPDATE listing_searches SET photo_worth=:photo_worth, photo_genuine=:photo_genuine,
+               photo_condition=:photo_condition, photo_checked_at=:ts WHERE listing_id=:lid AND search_id=:sid""",
+            {**res, "ts": db.now(), "lid": listing["id"], "sid": search["id"]},
         )
-        apply_image(conn, row["id"])
+        apply_scores(conn, listing["id"], search["id"])
         conn.commit()
         checked += 1
     add_cost(conn, spent)
@@ -100,26 +118,26 @@ def add_cost(conn, usd: float) -> None:
         db.set_meta(conn, "jev_cost_usd", db.get_meta(conn, "jev_cost_usd", 0) + usd)
 
 
-def run_search(crawler, search: dict, classify, check_image=None) -> str:
+def run_search(crawler, search: dict, classify, check_photo=None) -> str:
     items = crawler.search(search)
     with db.session() as conn:
         new_ids = [item["id"] for item in items if db.upsert_listing(conn, search["id"], item)]
         missing_desc = {r["id"] for r in conn.execute(
             f"SELECT id FROM listings WHERE description IS NULL AND id IN ({','.join('?' * len(new_ids))})", new_ids)}
 
-    # Open the newest listings to read their descriptions; Jev judges much better with them.
+    # Open the newest listings to read their descriptions and photo galleries; Jev judges much better with them.
     for lid in [i for i in new_ids if i in missing_desc][: config.DETAIL_FETCH_LIMIT]:
-        desc = crawler.description(f"https://www.facebook.com/marketplace/item/{lid}/")
+        details = crawler.details(f"https://www.facebook.com/marketplace/item/{lid}/")
         with db.session() as conn:
-            conn.execute("UPDATE listings SET description=? WHERE id=?", (desc, lid))
+            save_details(conn, lid, details)
 
     with db.session() as conn:
         classified = classify_pending(conn, search, classify)
         summary = f"{len(items)} found, {len(new_ids)} new, {classified} classified"
         opts = settings.load(conn)
-        if check_image and opts["image_check"]:
-            photos = check_images(conn, crawler, search, check_image, opts["image_min_score"])
-            summary += f", {photos} photos checked"
+        if check_photo and opts["photo_check"]:
+            checked = check_photos(conn, crawler, search, check_photo, opts["photo_min_score"])
+            summary += f", {checked} photo sets checked"
     return summary
 
 
@@ -130,13 +148,13 @@ def run_due() -> None:
     if not searches:
         return
 
-    classify, check_image = get_classifier(), get_image_checker()
+    classify, check_photo = get_classifier(), get_photo_checker()
     done = set()
     try:
         with MarketplaceCrawler() as crawler:
             for search in searches:
                 try:
-                    status, error = run_search(crawler, search, classify, check_image), None
+                    status, error = run_search(crawler, search, classify, check_photo), None
                 except CrawlError as e:
                     status, error = "error", str(e)
                 except Exception as e:

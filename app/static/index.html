@@ -78,7 +78,15 @@
           <label class="check"><input type="checkbox" name="kind" value="bait_price"> Bait prices ($1, $123…)</label>
           <label class="check"><input type="checkbox" name="kind" value="scam"> Likely scams</label>
         </fieldset>
-        <label class="check"><input type="checkbox" id="hide_photo_issues"> Hide photo problems (stock, damaged, no real photo)</label>
+        <label class="field">Condition (from photos)
+          <select id="min_condition">
+            <option value="">Any</option>
+            <option value="1">Worn or better</option>
+            <option value="2">Good or better</option>
+            <option value="3">Like new</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="hide_photo_issues"> Hide listings whose photos failed the check</label>
         <button class="btn link" id="reset">Reset filters</button>
       </section>
     </aside>
@@ -167,10 +175,10 @@
         <input name="default_interval_minutes" type="number" min="5" max="10080">
       </label>
       <h3>Photo check</h3>
-      <label class="check"><input type="checkbox" name="image_check"> Also check listing photos with Jev</label>
-      <p class="hint" id="photo-hint">A second Jev check that only asks whether the main photo is a stock image, shows a damaged item, or isn't a real photo of an item. It can only lower a score, and only when Jev is confident. It runs on genuine listings whose text score is at least:</p>
-      <label class="field">Minimum text score to check the photo
-        <input name="image_min_score" type="number" min="0" max="100" step="5">
+      <label class="check"><input type="checkbox" name="photo_check"> Also check listing photos with Jev</label>
+      <p class="hint">A second Jev check that looks at all of a listing's photos together with your request and asks whether it's worth a closer look, whether the photos are the seller's own, and what condition the item is in. It can only lower a score. It runs on genuine listings whose text score is at least:</p>
+      <label class="field">Minimum text score to check photos
+        <input name="photo_min_score" type="number" min="0" max="100" step="5">
       </label>
       <h3>Facebook cookies</h3>
       <p class="hint" id="cookie-state"></p>

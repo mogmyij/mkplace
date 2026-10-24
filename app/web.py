@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from . import config, db, settings, worker
 from .crawler import CrawlError, load_cookies
-from .jev import IMAGE_THRESHOLD
+from .jev import PHOTO_PASS
 from .query_parser import parse_query
 
 STATIC = Path(__file__).parent / "static"
@@ -77,8 +77,8 @@ class SettingsIn(BaseModel):
     active_start_hour: int | None = Field(None, ge=0, le=23)
     active_end_hour: int | None = Field(None, ge=0, le=23)
     default_interval_minutes: int = Field(30, ge=5, le=10080)
-    image_check: bool = True
-    image_min_score: float = Field(40, ge=0, le=100)
+    photo_check: bool = True
+    photo_min_score: float = Field(40, ge=0, le=100)
 
 
 class ListingPatch(BaseModel):
@@ -146,7 +146,8 @@ def update_search(search_id: int, body: SearchIn):
         )
         # A changed request means old Jev scores answered a different question.
         if old["query"] != values["query"] or old["min_price"] != values["min_price"] or old["max_price"] != values["max_price"]:
-            conn.execute("UPDATE listing_searches SET classified_at=NULL WHERE search_id=?", (search_id,))
+            conn.execute("UPDATE listing_searches SET classified_at=NULL, photo_checked_at=NULL, photo_worth=NULL, "
+                         "photo_genuine=NULL, photo_condition=NULL WHERE search_id=?", (search_id,))
             conn.execute("UPDATE searches SET run_requested=1 WHERE id=?", (search_id,))
         return dict(conn.execute("SELECT * FROM searches WHERE id=?", (search_id,)).fetchone())
 
@@ -184,6 +185,7 @@ def list_listings(
     view: Literal["active", "new", "starred", "hidden", "all"] = "active",
     kind: str | None = None,  # comma separated; unclassified listings count as genuine
     hide_photo_issues: bool = False,
+    min_condition: int | None = None,  # 0-3; only listings whose photos have been checked
     since_hours: int | None = None,
     sort: Literal["score", "newest", "price_asc", "price_desc"] = "score",
     limit: int = 60,
@@ -207,9 +209,11 @@ def list_listings(
         where.append("l.first_seen_at >= :cutoff")
         params["cutoff"] = datetime.fromtimestamp(cutoff, timezone.utc).isoformat(timespec="seconds")
     if hide_photo_issues:
-        t = IMAGE_THRESHOLD
-        where.append(f"COALESCE(l.image_stock, 0) < {t} AND COALESCE(l.image_damaged, 0) < {t} "
-                     f"AND COALESCE(l.image_no_item, 0) < {t}")
+        where.append(f"COALESCE(ls.photo_worth, 1) >= {PHOTO_PASS} AND COALESCE(ls.photo_genuine, 1) >= {PHOTO_PASS}")
+    if min_condition is not None:
+        # Score is a probability-weighted level, so round the same way the card label does.
+        where.append("ls.photo_condition >= :min_condition - 0.5")
+        params["min_condition"] = min_condition
     if view == "active":
         where.append("l.status != 'hidden'")
     elif view != "all":
@@ -231,6 +235,8 @@ def list_listings(
                (SELECT kind FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS kind,
                (SELECT deal FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS deal,
                (SELECT ai_source FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS ai_source,
+               (SELECT photo_condition FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS photo_condition,
+               json_array_length(l.photos) AS photo_count,
                MIN(ls.first_seen_at) AS first_seen_at,
                GROUP_CONCAT(ls.search_id) AS search_ids
         FROM listings l JOIN listing_searches ls ON ls.listing_id = l.id

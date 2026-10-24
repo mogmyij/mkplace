@@ -43,3 +43,22 @@ def test_load_cookie_editor_export(tmp_path):
                               "expirationDate": 1900000000.5}]))
     [c] = load_cookies(p)
     assert c["sameSite"] == "None" and c["expires"] == 1900000000.5
+
+
+def test_shrink_resizes_to_jpeg():
+    import io
+
+    from PIL import Image
+
+    from app.crawler import shrink
+    buf = io.BytesIO()
+    Image.new("RGBA", (3000, 1500), (255, 0, 0, 128)).save(buf, "PNG")
+    out = Image.open(io.BytesIO(shrink(buf.getvalue(), 1024)))
+    assert out.format == "JPEG" and out.size == (1024, 512)
+
+
+def test_photo_key_ignores_size_variants():
+    from app.crawler import photo_key
+    a = "https://scontent.xx.fbcdn.net/v/t45.5328-4/123_456_n.jpg?stp=dst-jpg_s960x960&_nc=1"
+    b = "https://scontent.xx.fbcdn.net/v/t45.5328-4/123_456_n.jpg?stp=dst-jpg_p180x540&_nc=2"
+    assert photo_key(a) == photo_key(b) == "123_456_n.jpg"

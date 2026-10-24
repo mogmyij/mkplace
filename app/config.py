@@ -23,8 +23,11 @@ JEV_MODEL = os.environ.get("JEV_MODEL") or _default_model  # blank in .env means
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 DETAIL_FETCH_LIMIT = int(os.environ.get("DETAIL_FETCH_LIMIT", "12"))
 SCROLL_ROUNDS = int(os.environ.get("SCROLL_ROUNDS", "6"))
-# Max listing photos sent to Jev per search run (OpenRouter only; toggle and threshold are in Settings).
-IMAGE_CHECK_LIMIT = int(os.environ.get("IMAGE_CHECK_LIMIT", "20"))
+# Photo check (OpenRouter only; toggle and threshold are in Settings): listings checked per search
+# run, photos per listing, and the size photos are shrunk to before sending.
+PHOTO_CHECK_LIMIT = int(os.environ.get("PHOTO_CHECK_LIMIT", "20"))
+MAX_PHOTOS = int(os.environ.get("MAX_PHOTOS", "10"))
+PHOTO_MAX_SIDE = int(os.environ.get("PHOTO_MAX_SIDE", "1024"))
 HEADLESS = os.environ.get("HEADLESS", "1") != "0"
 
 # Crawl scheduling. Interval and active hours are only defaults: change them in the UI's Settings.

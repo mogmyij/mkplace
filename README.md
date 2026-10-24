@@ -1,7 +1,8 @@
 # mkplace
 
 Self-hosted Facebook Marketplace watcher. You describe what you want in plain English, and a
-scheduler crawls Marketplace on your schedule. TypeSafe's **Jev** classification model then
+scheduler crawls Marketplace on your schedule. TypeSafe's **Jev** classification model (via
+OpenRouter) then
 separates **genuine listings** from the noise: wanted/ISO posts, dealer and reseller ads,
 services and rentals, bait prices, and scams. Only genuine listings rank, so the top of the page
 is what's worth messaging about.
@@ -43,7 +44,8 @@ with `uname -m`, which should print `aarch64`.
    nano .env
    ```
    Set at least:
-   - `TYPESAFE_API_KEY`: your Jev key. Without it, a pattern-based fallback is used.
+   - `OPENROUTER_API_KEY`: create one at https://openrouter.ai/keys and add credit. Without it, a
+     pattern-based fallback is used.
    - `TZ`: your timezone, e.g. `Australia/Sydney`. Active hours use it.
    - `APP_PASSWORD`: protects the UI with username `admin`. Recommended if anything other than
      your own LAN can reach the Pi.
@@ -84,7 +86,7 @@ cd mkplace && git pull && docker compose up -d --build
 **Troubleshooting:**
 - `docker compose logs --tail 100` shows each crawl and its result.
 - The status pill at the top right says whether the scheduler is running, paused, or outside
-  active hours, and whether scoring uses Jev or the fallback.
+  active hours, whether scoring uses Jev or the fallback, and how much Jev has cost so far.
 - If the Pi runs short of memory, lower `DETAIL_FETCH_LIMIT` and `SCROLL_ROUNDS` in `.env`, then
   run `docker compose up -d`.
 
@@ -131,7 +133,11 @@ answers four typed questions:
 | Price vs. typical used price | Choice: great / fair / overpriced / unclear | 20% |
 | Is it genuine, in budget, and worth messaging about? | Noul (probability) | 45% |
 
-A dealer ad that is a perfect keyword match therefore still scores near zero. The descriptions
+A dealer ad that is a perfect keyword match therefore still scores near zero.
+
+All four questions go in **one request per new listing**, and only new listings are scored.
+OpenRouter charges for input tokens only (outputs are free), and each listing is roughly a
+thousand tokens. The running total from OpenRouter's `usage.cost` is shown in the status pill. The descriptions
 of each post type are in `KIND_OPTIONS` in `app/jev.py`; edit them to teach Jev about patterns you
 see in your area. Editing a search's wording or budget re-scores its listings.
 
@@ -139,8 +145,9 @@ see in your area. Editing a search's wording or budget re-scores its listings.
 
 | Variable | Default | |
 |---|---|---|
-| `TYPESAFE_API_KEY` | – | Jev API key. Without it, a regex/keyword fallback is used |
-| `JEV_MODEL` | `jev-latest` | Pin a version such as `jev-1.13.0` to keep scores stable |
+| `OPENROUTER_API_KEY` | – | Calls Jev through OpenRouter. Without a Jev key, a regex/keyword fallback is used |
+| `JEV_MODEL` | `~typesafe/jev-latest` | Pin a version such as `typesafe/jev-1.14` to keep scores stable |
+| `TYPESAFE_API_KEY` | – | Alternative to OpenRouter: call TypeSafe directly (model default `jev-latest`) |
 | `TZ` | `UTC` | Timezone for active hours |
 | `DEFAULT_INTERVAL_MINUTES` | 30 | Initial default (then editable in Settings) |
 | `ACTIVE_HOURS` | – | Initial active hours, e.g. `7-23` (then editable in Settings) |

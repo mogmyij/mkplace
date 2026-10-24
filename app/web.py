@@ -282,13 +282,16 @@ def status():
     with db.session() as conn:
         heartbeat = db.get_meta(conn, "worker_heartbeat")
         current = settings.load(conn)
+        jev_cost = db.get_meta(conn, "jev_cost_usd", 0)
     alive = False
     if heartbeat:
         alive = (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat)).total_seconds() < 300
     return {
         "worker_heartbeat": heartbeat,
         "worker_alive": alive,
-        "classifier": f"Jev ({config.JEV_MODEL})" if config.TYPESAFE_API_KEY else "Heuristic (no TYPESAFE_API_KEY)",
+        "classifier": (f"Jev via {config.JEV_PROVIDER} ({config.JEV_MODEL})" if config.JEV_API_KEY
+                       else "Heuristic (no OPENROUTER_API_KEY)"),
+        "jev_cost_usd": jev_cost,
         "cookies_present": config.FB_COOKIES_FILE.exists(),
         "paused": current["paused"],
         "in_active_hours": settings.in_active_hours(current),

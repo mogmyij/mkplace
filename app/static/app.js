@@ -267,7 +267,8 @@ async function loadStatus() {
   const s = await api("/api/status");
   const pill = $("#status-pill");
   const crawl = !s.worker_alive ? "Worker offline" : s.paused ? "Crawling paused" : !s.in_active_hours ? "Outside active hours" : "Worker running";
-  pill.textContent = `${crawl} · ${s.classifier}`;
+  const spent = s.jev_cost_usd ? ` · $${s.jev_cost_usd.toFixed(s.jev_cost_usd < 1 ? 4 : 2)} spent` : "";
+  pill.textContent = `${crawl} · ${s.classifier}${spent}`;
   pill.className = "pill " + (s.worker_alive && !s.paused ? "ok" : "bad");
   $("#cookie-state").textContent = s.cookies_present ? "A cookie file is installed. Paste a new export to replace it." : "No cookie file installed yet.";
   if (!s.cookies_present) showBanner("No Facebook cookies yet. Open ⚙ Settings and paste a Cookie-Editor export of facebook.com.", true);

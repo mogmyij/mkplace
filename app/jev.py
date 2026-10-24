@@ -121,7 +121,7 @@ def describe(kind: str, relevance: float, deal: str) -> str:
 
 
 def result(kind: str, kind_probs: dict, relevance: float, deal: str, deal_probs: dict, worth: float,
-           source: str, raw=None) -> dict:
+           source: str, raw=None, cost: float = 0.0) -> dict:
     genuine = kind_probs.get("genuine", 1.0 if kind == "genuine" else 0.0)
     return {
         "ai_score": combine(relevance, deal_probs, genuine, worth),
@@ -131,11 +131,12 @@ def result(kind: str, kind_probs: dict, relevance: float, deal: str, deal_probs:
         "deal": deal,
         "junk_prob": round(1 - genuine, 3),
         "ai_raw": json.dumps(raw) if raw is not None else None,
+        "cost": cost,
     }
 
 
 class JevClient:
-    def __init__(self, api_key: str = config.TYPESAFE_API_KEY, url: str = config.TYPESAFE_URL,
+    def __init__(self, api_key: str = config.JEV_API_KEY, url: str = config.JEV_URL,
                  model: str = config.JEV_MODEL, http: httpx.Client | None = None):
         self.api_key = api_key
         self.url = url
@@ -145,6 +146,9 @@ class JevClient:
     def ask(self, state: str, questions: dict) -> dict:
         body = {"state": state, "model": self.model, "questions": questions}
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        if "openrouter.ai" in self.url:
+            # OpenRouter's optional app attribution headers; requests show up as "mkplace" in its dashboard.
+            headers.update({"HTTP-Referer": "https://github.com/mogmyij/mkplace", "X-Title": "mkplace"})
         delay = 0.5
         for attempt in range(4):
             resp = self.http.post(self.url, json=body, headers=headers)
@@ -172,6 +176,8 @@ class JevClient:
             worth=float(a["worth"]["noul"]),
             source=data.get("model", self.model),
             raw=a,
+            # OpenRouter reports the USD cost of each request; TypeSafe direct doesn't.
+            cost=float((data.get("usage") or {}).get("cost") or 0),
         )
 
 
@@ -215,7 +221,7 @@ def heuristic_classify(search: dict, listing: dict) -> dict:
 
 
 def get_classifier():
-    if config.TYPESAFE_API_KEY:
+    if config.JEV_API_KEY:
         client = JevClient()
 
         def classify(search, listing):

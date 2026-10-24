@@ -31,8 +31,10 @@ def classify_pending(conn, search: dict, classify) -> int:
            WHERE ls.search_id=? AND ls.classified_at IS NULL""",
         (search["id"],),
     ).fetchall()
+    spent = 0.0
     for row in rows:
         result = classify(search, dict(row))
+        spent += result.get("cost", 0)
         conn.execute(
             """UPDATE listing_searches SET ai_score=:ai_score, ai_reason=:ai_reason, ai_source=:ai_source,
                kind=:kind, deal=:deal, junk_prob=:junk_prob, ai_raw=:ai_raw, classified_at=:ts
@@ -40,6 +42,8 @@ def classify_pending(conn, search: dict, classify) -> int:
             {**result, "ts": db.now(), "lid": row["id"], "sid": search["id"]},
         )
         conn.commit()
+    if spent:
+        db.set_meta(conn, "jev_cost_usd", db.get_meta(conn, "jev_cost_usd", 0) + spent)
     return len(rows)
 
 

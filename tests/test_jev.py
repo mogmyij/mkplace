@@ -95,3 +95,51 @@ def test_heuristic_junk_patterns(title, desc, price, kind):
 def test_combine_bounds():
     assert combine(3, {"great_deal": 1}, 1, 1) == 100
     assert combine(3, {"great_deal": 1}, 0, 1) == 0
+
+
+def test_openrouter_request_headers_and_cost():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["headers"] = request.headers
+        seen["model"] = json.loads(request.content)["model"]
+        return httpx.Response(200, json={
+            "id": "gen-1", "provider": "TypeSafe", "model": "typesafe/jev-1.14",
+            "answers": {
+                "kind": {"choice": "genuine", "probabilities": {"genuine": 1.0}},
+                "relevance": {"score": 3}, "deal": {"choice": "fair"}, "worth": {"noul": 0.8}},
+            "usage": {"input_tokens": 900, "output_tokens": 0, "cost": 0.0000378},
+        })
+
+    client = JevClient(api_key="sk-or-1", url="https://openrouter.ai/api/v1/systemone", model="~typesafe/jev-latest",
+                       http=httpx.Client(transport=httpx.MockTransport(handler)))
+    out = client.classify(SEARCH, LISTING)
+    assert seen["url"] == "https://openrouter.ai/api/v1/systemone"
+    assert seen["model"] == "~typesafe/jev-latest"
+    assert seen["headers"]["authorization"] == "Bearer sk-or-1"
+    assert seen["headers"]["x-title"] == "mkplace"
+    assert out["ai_source"] == "typesafe/jev-1.14"
+    assert out["cost"] == 0.0000378
+
+
+def test_config_prefers_openrouter(monkeypatch):
+    import importlib
+
+    from app import config
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-1")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-1")
+    monkeypatch.delenv("JEV_MODEL", raising=False)
+    monkeypatch.delenv("JEV_URL", raising=False)
+    try:
+        importlib.reload(config)
+        assert (config.JEV_PROVIDER, config.JEV_API_KEY) == ("OpenRouter", "sk-or-1")
+        assert config.JEV_URL == "https://openrouter.ai/api/v1/systemone"
+        assert config.JEV_MODEL == "~typesafe/jev-latest"
+        monkeypatch.delenv("OPENROUTER_API_KEY")
+        importlib.reload(config)
+        assert (config.JEV_PROVIDER, config.JEV_API_KEY, config.JEV_MODEL) == ("TypeSafe", "ts-1", "jev-latest")
+    finally:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+        importlib.reload(config)

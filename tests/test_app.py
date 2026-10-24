@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 def env(tmp_path, monkeypatch):
     from app import config
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
-    monkeypatch.setattr(config, "TYPESAFE_API_KEY", "")
+    monkeypatch.setattr(config, "JEV_API_KEY", "")
     from app import db, pipeline, web
     importlib.reload(web)
     db.init()
@@ -144,3 +144,16 @@ def test_cookie_upload(env, tmp_path, monkeypatch):
     good = client.put("/api/cookies", content='[{"name": "c_user", "value": "1"}, {"name": "xs", "value": "2"}]')
     assert good.json() == {"ok": True, "count": 2}
     assert (tmp_path / "cookies.json").exists()
+
+
+def test_jev_cost_is_accumulated(env):
+    client, pipeline, db = env
+    client.post("/api/searches", json={"query": "PS5", "location": "sydney"})
+    with db.session() as conn:
+        [due] = pipeline.due_searches(conn)
+
+    def classify(search, listing):
+        return {**pipeline.get_classifier()(search, listing), "cost": 0.001}
+
+    pipeline.run_search(FakeCrawler(ITEMS), due, classify)
+    assert client.get("/api/status").json()["jev_cost_usd"] == pytest.approx(0.001 * len(ITEMS))

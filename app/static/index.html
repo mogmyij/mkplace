@@ -12,6 +12,7 @@
     <a class="brand" href="/">mkplace</a>
     <input id="q" type="search" placeholder="Search within results">
     <span id="status-pill" class="pill">…</span>
+    <button class="icon-btn" id="open-settings" title="Settings" aria-label="Settings">⚙</button>
   </header>
 
   <div class="layout">
@@ -68,7 +69,15 @@
           <label class="check"><input type="checkbox" name="deal" value="unclear"> Unclear</label>
           <label class="check"><input type="checkbox" name="deal" value="overpriced"> Overpriced</label>
         </fieldset>
-        <label class="check"><input type="checkbox" id="hide_scams" checked> Hide likely scams</label>
+        <fieldset class="field">
+          <legend>Listing type</legend>
+          <label class="check"><input type="checkbox" name="kind" value="genuine" checked> Genuine listings</label>
+          <label class="check"><input type="checkbox" name="kind" value="wanted"> Wanted / ISO posts</label>
+          <label class="check"><input type="checkbox" name="kind" value="business_ad"> Dealer &amp; business ads</label>
+          <label class="check"><input type="checkbox" name="kind" value="service"> Services &amp; rentals</label>
+          <label class="check"><input type="checkbox" name="kind" value="bait_price"> Bait prices ($1, $123…)</label>
+          <label class="check"><input type="checkbox" name="kind" value="scam"> Likely scams</label>
+        </fieldset>
         <button class="btn link" id="reset">Reset filters</button>
       </section>
     </aside>
@@ -112,16 +121,21 @@
         </label>
       </div>
       <div class="row2">
-        <label class="field">Check every
-          <select name="interval_minutes">
-            <option value="10">10 minutes</option>
-            <option value="15">15 minutes</option>
-            <option value="30" selected>30 minutes</option>
-            <option value="60">1 hour</option>
-            <option value="180">3 hours</option>
-            <option value="720">12 hours</option>
-          </select>
-        </label>
+        <div class="field">Check every
+          <div class="row">
+            <select name="interval_preset">
+              <option value="10">10 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="60">1 hour</option>
+              <option value="180">3 hours</option>
+              <option value="720">12 hours</option>
+              <option value="1440">Daily</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input name="interval_minutes" type="number" min="5" max="10080" placeholder="min" hidden>
+          </div>
+        </div>
         <label class="check pad-top"><input type="checkbox" name="enabled" checked> Enabled</label>
       </div>
       <p class="hint">Location is the bit after <code>/marketplace/</code> in the FB URL once you've set a location there, e.g. <code>sydney</code> or <code>112345678901234</code>.</p>
@@ -130,6 +144,36 @@
         <span class="spacer"></span>
         <button type="button" class="btn" id="cancel">Cancel</button>
         <button type="submit" class="btn primary">Save &amp; run</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <form id="settings-form" method="dialog">
+      <h2>Settings</h2>
+      <h3>Crawling</h3>
+      <label class="check"><input type="checkbox" name="paused"> Pause all scheduled crawling</label>
+      <p class="hint">"Run now" still works while paused.</p>
+      <div class="field">Only crawl between
+        <div class="row">
+          <select name="active_start_hour"></select>
+          <span>and</span>
+          <select name="active_end_hour"></select>
+        </div>
+      </div>
+      <p class="hint">Set both to "any time" to crawl around the clock. Overnight windows such as 22:00–06:00 work too. Times use the container's <code>TZ</code>.</p>
+      <label class="field">Default interval for new searches (minutes)
+        <input name="default_interval_minutes" type="number" min="5" max="10080">
+      </label>
+      <h3>Facebook cookies</h3>
+      <p class="hint" id="cookie-state"></p>
+      <label class="field">Paste a Cookie-Editor JSON export of facebook.com
+        <textarea name="cookies" rows="4" placeholder='[{"name": "c_user", ...}]'></textarea>
+      </label>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="settings-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
       </div>
     </form>
   </dialog>

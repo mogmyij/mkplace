@@ -45,8 +45,9 @@ CREATE TABLE IF NOT EXISTS listing_searches (
     ai_score REAL,
     ai_reason TEXT,
     ai_source TEXT,
+    kind TEXT,
     deal TEXT,
-    scam_prob REAL,
+    junk_prob REAL,
     ai_raw TEXT,
     classified_at TEXT,
     PRIMARY KEY (listing_id, search_id)
@@ -87,6 +88,12 @@ def session():
 def init():
     with session() as conn:
         conn.executescript(SCHEMA)
+        # Databases created before listing kinds existed: add the columns and re-score.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(listing_searches)")}
+        if "junk_prob" not in cols:
+            conn.execute("ALTER TABLE listing_searches ADD COLUMN kind TEXT")
+            conn.execute("ALTER TABLE listing_searches ADD COLUMN junk_prob REAL")
+            conn.execute("UPDATE listing_searches SET classified_at=NULL")
 
 
 def set_meta(conn, key: str, value) -> None:

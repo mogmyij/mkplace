@@ -153,6 +153,8 @@ dialog {
 }
 dialog::backdrop { background: rgba(0,0,0,.5); }
 dialog h2 { margin: 0 0 8px; }
+dialog h3 { font-size: 15px; margin: 16px 0 4px; }
+.kind { position: absolute; left: 8px; bottom: 8px; background: var(--bad); color: #fff; font-size: 11px; padding: 2px 7px; border-radius: 10px; }
 .dialog-actions { display: flex; gap: 8px; margin-top: 12px; }
 .spacer { flex: 1; }
 

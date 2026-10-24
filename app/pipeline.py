@@ -1,20 +1,26 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from . import config, db
+from . import config, db, settings
 from .crawler import CrawlError, MarketplaceCrawler
 from .jev import get_classifier
 
 log = logging.getLogger(__name__)
 
 
-def due_searches(conn) -> list[dict]:
+def due_searches(conn, now_local: datetime | None = None) -> list[dict]:
+    s = settings.load(conn)
+    # Manual "run now" requests go through even when paused or outside active hours.
+    scheduled_ok = not s["paused"] and settings.in_active_hours(s, now_local)
     rows = conn.execute("SELECT * FROM searches WHERE enabled=1 OR run_requested=1").fetchall()
     now = datetime.now(timezone.utc)
     due = []
     for r in rows:
+        if r["run_requested"]:
+            due.append(dict(r))
+            continue
         last = datetime.fromisoformat(r["last_run_at"]) if r["last_run_at"] else None
-        if r["run_requested"] or last is None or now - last >= timedelta(minutes=r["interval_minutes"]):
+        if scheduled_ok and r["enabled"] and (last is None or now - last >= timedelta(minutes=r["interval_minutes"])):
             due.append(dict(r))
     return due
 
@@ -29,7 +35,7 @@ def classify_pending(conn, search: dict, classify) -> int:
         result = classify(search, dict(row))
         conn.execute(
             """UPDATE listing_searches SET ai_score=:ai_score, ai_reason=:ai_reason, ai_source=:ai_source,
-               deal=:deal, scam_prob=:scam_prob, ai_raw=:ai_raw, classified_at=:ts
+               kind=:kind, deal=:deal, junk_prob=:junk_prob, ai_raw=:ai_raw, classified_at=:ts
                WHERE listing_id=:lid AND search_id=:sid""",
             {**result, "ts": db.now(), "lid": row["id"], "sid": search["id"]},
         )
@@ -73,7 +79,8 @@ def run_due() -> None:
                     status, error = "error", str(e)
                 except Exception as e:
                     log.exception("Search %s failed", search["id"])
-                    status, error = "error", f"{type(e).__name__}: {e}"
+                    # Playwright errors carry a multi-line call log; the first line is the useful part.
+                    status, error = "error", f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
                 _record(search["id"], status, error)
                 done.add(search["id"])
                 log.info("Search %s (%s): %s %s", search["id"], search["name"], status, error or "")

@@ -1,8 +1,10 @@
 """Score listings with TypeSafe's Jev model (falls back to a heuristic without an API key).
 
 Jev answers typed questions about a "state" string: Choice (pick an option), Score (rubric
-level) and Noul (probability a statement is true). We ask four questions per listing and
-blend them into a 0-100 "worth looking at" score.
+level) and Noul (probability a statement is true). Its main job here is separating genuine
+listings from the noise Marketplace is full of: wanted posts, dealer/reseller ads, services
+and rentals, placeholder prices, and scams. Only genuine listings can score well; relevance
+and price then rank them.
 """
 import json
 import logging
@@ -15,9 +17,35 @@ from . import config
 
 log = logging.getLogger(__name__)
 
+KIND_OPTIONS = {
+    "genuine": "A real seller offering one specific item for sale, with a real asking price",
+    "wanted": "A wanted, ISO, or 'looking for' post, or someone offering to buy items ('we buy', 'cash for')",
+    "business_ad": (
+        "A dealer, store, or reseller ad: stock lists, 'many available', financing or weekly payments, "
+        "'message for prices', a brand-new item repeatedly posted by a business, or a catalogue of different items"
+    ),
+    "service": "Advertises a service, rental, job, lesson, repair, removal, or real estate rather than an item",
+    "bait_price": (
+        "Uses a fake or misleading price to game search: $0, $1, $123, $1234, a deposit or per-week price, "
+        "or 'price is negotiable, DM' with no real price"
+    ),
+    "scam": (
+        "Shows scam signs: too good to be true, asks to move off Facebook (WhatsApp, email, phone), shipping-only "
+        "for a big item, payment by gift card or deposit up front, or generic stock text and photos"
+    ),
+}
+KIND_LABEL = {
+    "genuine": "Genuine",
+    "wanted": "Wanted post",
+    "business_ad": "Business ad",
+    "service": "Service/rental ad",
+    "bait_price": "Bait price",
+    "scam": "Likely scam",
+}
+
 RELEVANCE_LEVELS = [
     "Not the item the buyer wants",
-    "Related but wrong (accessory, parts, different model, wanted ad)",
+    "Related but wrong (accessory, parts, different model)",
     "Close match with some differences from the request",
     "Exactly what the buyer asked for",
 ]
@@ -31,9 +59,14 @@ DEAL_VALUE = {"great_deal": 1.0, "fair": 0.6, "unclear": 0.4, "overpriced": 0.1}
 DEAL_LABEL = {"great_deal": "great deal", "fair": "fair price", "overpriced": "overpriced", "unclear": "price unclear"}
 
 QUESTIONS = {
+    "kind": {
+        "type": "choice",
+        "instructions": "What kind of Facebook Marketplace post is this?",
+        "criteria": KIND_OPTIONS,
+    },
     "relevance": {
         "type": "score",
-        "instructions": "How well does this Facebook Marketplace listing match what the buyer is looking for?",
+        "instructions": "How well does this listing match what the buyer is looking for?",
         "criteria": RELEVANCE_LEVELS,
     },
     "deal": {
@@ -41,17 +74,11 @@ QUESTIONS = {
         "instructions": "Judge the asking price against what this item usually sells for second-hand.",
         "criteria": DEAL_OPTIONS,
     },
-    "scam": {
-        "type": "noul",
-        "instructions": (
-            "This listing shows signs of being a scam or bait: a price too good to be true, a placeholder "
-            "price like $1 or $123, requests to move off Facebook, shipping-only, or vague copy-pasted text."
-        ),
-    },
     "worth": {
         "type": "noul",
         "instructions": (
-            "Given the buyer's request and budget, this listing is worth the buyer's time to open and look at."
+            "This is a genuine listing for what the buyer wants, within their budget, and worth messaging the "
+            "seller about."
         ),
     },
 }
@@ -78,21 +105,33 @@ def build_state(search: dict, listing: dict) -> str:
     )
 
 
-def combine(relevance: float, deal_probs: dict, scam: float, worth: float) -> float:
-    """relevance is 0-3; returns 0-100."""
+def combine(relevance: float, deal_probs: dict, genuine: float, worth: float) -> float:
+    """relevance is 0-3, genuine is P(kind == genuine); returns 0-100."""
     deal_value = sum(DEAL_VALUE.get(k, 0.4) * p for k, p in deal_probs.items()) if deal_probs else 0.4
     base = 0.45 * worth + 0.35 * (relevance / 3) + 0.20 * deal_value
-    return round(100 * base * (1 - 0.8 * scam), 1)
+    # Ads, wanted posts and scams can't rank, however relevant they look.
+    return round(100 * base * genuine, 1)
 
 
-def describe(relevance: float, deal: str, scam: float) -> str:
+def describe(kind: str, relevance: float, deal: str) -> str:
+    if kind != "genuine":
+        return KIND_LABEL.get(kind, kind)
     match = ["Not a match", "Loosely related", "Close match", "Exact match"][min(3, max(0, round(relevance)))]
-    parts = [match, DEAL_LABEL.get(deal, deal)]
-    if scam >= 0.5:
-        parts.append("likely scam")
-    elif scam >= 0.25:
-        parts.append("some scam signals")
-    return " · ".join(parts)
+    return f"{match} · {DEAL_LABEL.get(deal, deal)}"
+
+
+def result(kind: str, kind_probs: dict, relevance: float, deal: str, deal_probs: dict, worth: float,
+           source: str, raw=None) -> dict:
+    genuine = kind_probs.get("genuine", 1.0 if kind == "genuine" else 0.0)
+    return {
+        "ai_score": combine(relevance, deal_probs, genuine, worth),
+        "ai_reason": describe(kind, relevance, deal),
+        "ai_source": source,
+        "kind": kind,
+        "deal": deal,
+        "junk_prob": round(1 - genuine, 3),
+        "ai_raw": json.dumps(raw) if raw is not None else None,
+    }
 
 
 class JevClient:
@@ -123,43 +162,56 @@ class JevClient:
     def classify(self, search: dict, listing: dict) -> dict:
         data = self.ask(build_state(search, listing), QUESTIONS)
         a = data["answers"]
-        relevance = float(a["relevance"]["score"])
-        deal = a["deal"]["choice"]
-        scam = float(a["scam"]["noul"])
-        worth = float(a["worth"]["noul"])
-        return {
-            "ai_score": combine(relevance, a["deal"].get("probabilities") or {deal: 1.0}, scam, worth),
-            "ai_reason": describe(relevance, deal, scam),
-            "ai_source": data.get("model", self.model),
-            "deal": deal,
-            "scam_prob": scam,
-            "ai_raw": json.dumps(a),
-        }
+        kind, deal = a["kind"]["choice"], a["deal"]["choice"]
+        return result(
+            kind=kind,
+            kind_probs=a["kind"].get("probabilities") or {kind: 1.0},
+            relevance=float(a["relevance"]["score"]),
+            deal=deal,
+            deal_probs=a["deal"].get("probabilities") or {deal: 1.0},
+            worth=float(a["worth"]["noul"]),
+            source=data.get("model", self.model),
+            raw=a,
+        )
+
+
+# (kind, where to look, pattern). Wanted/service wording is only trusted in the title; descriptions
+# of genuine items often say things like "great for anyone looking for...".
+JUNK_PATTERNS = [
+    ("wanted", "title", r"\b(wanted|wtb|iso|in search of|looking for|we buy|buying|cash for)\b"),
+    ("service", "title", r"\b(for rent|rental|to rent|hire|lessons?|tutor|repairs?|removals?|cleaning|services?|room for)\b"),
+    ("business_ad", "text", r"\b(finance available|financing|weekly payments?|afterpay|in stock|many available|"
+                    r"wholesale|dealer|showroom|all sizes available|bulk)\b"),
+    ("scam", "text", r"\b(whats ?app|text me|e-?mail me|shipping only|gift ?cards?|deposit to hold)\b"),
+]
+BAIT_PRICES = {0.0, 1.0, 12.0, 123.0, 1234.0, 12345.0, 111.0, 1111.0, 999999.0}
 
 
 def heuristic_classify(search: dict, listing: dict) -> dict:
-    """Keyword overlap + budget check, used when no Jev API key is configured."""
-    words = {w for w in re.findall(r"\w+", search["keywords"].lower()) if len(w) > 1}
-    title = (listing.get("title") or "").lower() + " " + (listing.get("description") or "").lower()
-    overlap = sum(1 for w in words if w in title) / max(1, len(words))
-    relevance = 3 * overlap
+    """Pattern matching + keyword overlap, used when no Jev API key is configured."""
+    title = (listing.get("title") or "").lower()
+    text = f"{title}\n{listing.get('description') or ''}".lower()
     price, max_price = listing.get("price"), search.get("max_price")
+
+    kind = "genuine"
+    for k, scope, pattern in JUNK_PATTERNS:
+        if re.search(pattern, title if scope == "title" else text):
+            kind = k
+            break
+    if kind == "genuine" and price in BAIT_PRICES and (listing.get("price_text") or "").lower() != "free":
+        kind = "bait_price"
+
+    words = {w for w in re.findall(r"\w+", search["keywords"].lower()) if len(w) > 1}
+    overlap = sum(1 for w in words if w in text) / max(1, len(words))
     if price is None:
         deal = "unclear"
     elif max_price and price > max_price:
         deal = "overpriced"
     else:
         deal = "fair"
-    scam = 0.6 if price is not None and 0 < price <= 5 else 0.05
     worth = overlap * (0.3 if deal == "overpriced" else 1.0)
-    return {
-        "ai_score": combine(relevance, {deal: 1.0}, scam, worth),
-        "ai_reason": describe(relevance, deal, scam),
-        "ai_source": "heuristic",
-        "deal": deal,
-        "scam_prob": scam,
-        "ai_raw": None,
-    }
+    genuine = 0.9 if kind == "genuine" else 0.15
+    return result(kind, {"genuine": genuine}, 3 * overlap, deal, {deal: 1.0}, worth, "heuristic")
 
 
 def get_classifier():

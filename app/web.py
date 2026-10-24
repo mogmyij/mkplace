@@ -1,26 +1,46 @@
 import base64
+import json
+import logging
 import secrets
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, db
+from . import config, db, settings, worker
+from .crawler import CrawlError, load_cookies
 from .query_parser import parse_query
 
 STATIC = Path(__file__).parent / "static"
 
-app = FastAPI(title="mkplace")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 db.init()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    scheduler = None
+    if config.RUN_WORKER:
+        scheduler = BackgroundScheduler()
+        worker.add_jobs(scheduler)
+        scheduler.start()
+    yield
+    if scheduler:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="mkplace", lifespan=lifespan)
 
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
-    if config.APP_PASSWORD:
+    if config.APP_PASSWORD and request.url.path != "/healthz":
         header = request.headers.get("authorization", "")
         ok = False
         if header.startswith("Basic "):
@@ -42,12 +62,19 @@ class SearchIn(BaseModel):
     radius_km: int = Field(40, ge=1, le=500)
     min_price: float | None = None
     max_price: float | None = None
-    interval_minutes: int = Field(30, ge=5, le=1440)
+    interval_minutes: int | None = Field(None, ge=5, le=10080)
     enabled: bool = True
 
 
 class ParseIn(BaseModel):
     query: str
+
+
+class SettingsIn(BaseModel):
+    paused: bool = False
+    active_start_hour: int | None = Field(None, ge=0, le=23)
+    active_end_hour: int | None = Field(None, ge=0, le=23)
+    default_interval_minutes: int = Field(30, ge=5, le=10080)
 
 
 class ListingPatch(BaseModel):
@@ -56,6 +83,9 @@ class ListingPatch(BaseModel):
 
 def _search_values(body: SearchIn) -> dict:
     parsed = parse_query(body.query)
+    if body.interval_minutes is None:
+        with db.session() as conn:
+            body.interval_minutes = settings.load(conn)["default_interval_minutes"]
     return {
         "name": body.name or (body.keywords or parsed["keywords"])[:60],
         "query": body.query,
@@ -148,7 +178,7 @@ def list_listings(
     min_score: float = 0,
     deal: str | None = None,  # comma separated
     view: Literal["active", "new", "starred", "hidden", "all"] = "active",
-    hide_scams: bool = True,
+    kind: str | None = None,  # comma separated; unclassified listings count as genuine
     since_hours: int | None = None,
     sort: Literal["score", "newest", "price_asc", "price_desc"] = "score",
     limit: int = 60,
@@ -179,17 +209,17 @@ def list_listings(
 
     having = ["COALESCE(MAX(ls.ai_score), 0) >= :min_score"]
     params["min_score"] = min_score
-    if hide_scams:
-        having.append("COALESCE(MAX(ls.scam_prob), 0) < 0.5")
-    if deal:
-        deals = [d for d in deal.split(",") if d]
-        having.append(f"deal IN ({','.join(f':d{i}' for i in range(len(deals)))})")
-        params.update({f"d{i}": d for i, d in enumerate(deals)})
+    for name, csv, expr in (("d", deal, "deal"), ("k", kind, "COALESCE(kind, 'genuine')")):
+        values = [v for v in (csv or "").split(",") if v]
+        if values:
+            having.append(f"{expr} IN ({','.join(f':{name}{i}' for i in range(len(values)))})")
+            params.update({f"{name}{i}": v for i, v in enumerate(values)})
 
     # One row per listing; when it matches several searches, report its best score.
     sql = f"""
-        SELECT l.*, MAX(ls.ai_score) AS ai_score, MAX(ls.scam_prob) AS scam_prob,
+        SELECT l.*, MAX(ls.ai_score) AS ai_score, MIN(ls.junk_prob) AS junk_prob,
                (SELECT ai_reason FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS ai_reason,
+               (SELECT kind FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS kind,
                (SELECT deal FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS deal,
                (SELECT ai_source FROM listing_searches x WHERE x.listing_id=l.id AND (:sid IS NULL OR x.search_id=:sid) ORDER BY x.ai_score DESC LIMIT 1) AS ai_source,
                MIN(ls.first_seen_at) AS first_seen_at,
@@ -215,10 +245,43 @@ def patch_listing(listing_id: str, body: ListingPatch):
     return {"ok": True}
 
 
+@app.get("/api/settings")
+def get_settings():
+    with db.session() as conn:
+        return settings.load(conn)
+
+
+@app.put("/api/settings")
+def put_settings(body: SettingsIn):
+    with db.session() as conn:
+        return settings.save(conn, body.model_dump())
+
+
+@app.put("/api/cookies")
+async def put_cookies(request: Request):
+    """Replace the Facebook cookie file (paste of a Cookie-Editor JSON export)."""
+    raw = await request.body()
+    tmp = config.FB_COOKIES_FILE.with_suffix(".tmp")
+    try:
+        data = json.loads(raw)
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data))
+        names = {c["name"] for c in load_cookies(tmp)}
+    except (ValueError, KeyError, TypeError, CrawlError) as e:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(400, f"Not a cookie export: {e}")
+    if not {"c_user", "xs"} <= names:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(400, "Export has no c_user/xs cookies - make sure you're logged in to facebook.com when exporting.")
+    tmp.replace(config.FB_COOKIES_FILE)
+    return {"ok": True, "count": len(names)}
+
+
 @app.get("/api/status")
 def status():
     with db.session() as conn:
         heartbeat = db.get_meta(conn, "worker_heartbeat")
+        current = settings.load(conn)
     alive = False
     if heartbeat:
         alive = (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat)).total_seconds() < 300
@@ -227,7 +290,14 @@ def status():
         "worker_alive": alive,
         "classifier": f"Jev ({config.JEV_MODEL})" if config.TYPESAFE_API_KEY else "Heuristic (no TYPESAFE_API_KEY)",
         "cookies_present": config.FB_COOKIES_FILE.exists(),
+        "paused": current["paused"],
+        "in_active_hours": settings.in_active_hours(current),
     }
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
 
 
 @app.get("/")
